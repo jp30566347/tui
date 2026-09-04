@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nhl-tui — the NHL, in your terminal</title>
+<meta name="description" content="NHL scores, standings, schedule and leaders in your terminal. Live scores, wild card races and full boxscores. No API key, no signup.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🏒</text></svg>">
+
+<meta property="og:title" content="nhl-tui — the NHL, in your terminal">
+<meta property="og:description" content="Live scores, wild card standings and full boxscores in your terminal. No API key, no signup.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://jp30566347.github.io/tui/nhl-tui/">
+<meta property="og:image" content="https://raw.githubusercontent.com/jp30566347/tui/main/docs/nhl-tui/screenshot.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<style>
+:root{
+  --bg:#0b0c11; --surface:#12131a; --raised:#171925; --line:#252939;
+  --fg:#e7eaf3; --muted:#8b91a8; --dim:#5a6070;
+  --ice:#4dc4d6; --accent:#e6c07b; --green:#5fd39a; --red:#f06d7a;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:var(--sans); font-size:16px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--ice)}
+a:hover{color:var(--fg)}
+.wrap{max-width:940px; margin:0 auto; padding:0 24px}
+
+header{padding:76px 0 8px; text-align:center}
+.logo{
+  font-family:var(--mono); font-size:15px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--dim); margin:0 0 26px;
+}
+h1{
+  font-size:clamp(2.1rem,6vw,3.4rem); line-height:1.1; margin:0 0 18px;
+  letter-spacing:-.02em; font-weight:650;
+}
+h1 .accent{color:var(--ice)}
+.tagline{
+  font-size:clamp(1.02rem,2.4vw,1.2rem); color:var(--muted);
+  max-width:640px; margin:0 auto 14px;
+}
+.tagline strong{color:var(--fg); font-weight:600}
+.badges{
+  font-family:var(--mono); font-size:.8rem; color:var(--dim);
+  margin:0 0 34px; display:flex; gap:8px; justify-content:center; flex-wrap:wrap;
+}
+.badges span{
+  border:1px solid var(--line); border-radius:999px; padding:4px 12px; background:var(--surface);
+}
+
+.install{max-width:720px; margin:0 auto}
+.install-label{
+  font-family:var(--mono); font-size:.76rem; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--dim); margin:0 0 10px; text-align:left;
+}
+.cmd{
+  display:flex; align-items:stretch; gap:0;
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  overflow:hidden; text-align:left;
+}
+.cmd code{
+  flex:1; min-width:0; font-family:var(--mono); font-size:.9rem;
+  padding:16px 18px; color:var(--fg);
+  white-space:pre-wrap; overflow-wrap:anywhere;
+}
+.cmd code .prompt{color:var(--green); user-select:none}
+.copy{
+  flex:none; border:0; border-left:1px solid var(--line);
+  background:var(--raised); color:var(--muted); cursor:pointer;
+  font-family:var(--sans); font-size:.85rem; font-weight:600;
+  padding:0 20px; transition:color .12s,background .12s; white-space:nowrap;
+}
+.copy:hover{background:#1e2130; color:var(--fg)}
+.copy.done{color:var(--green)}
+.install-note{font-size:.85rem; color:var(--dim); margin:12px 2px 0; text-align:left}
+
+.shot{margin:64px 0 0}
+.shot img{
+  width:100%; height:auto; display:block;
+  border:1px solid var(--line); border-radius:12px; background:var(--surface);
+}
+.shot figcaption{font-size:.85rem; color:var(--dim); margin-top:12px; text-align:center}
+
+section{padding:72px 0 0}
+h2{
+  font-size:1.05rem; font-family:var(--mono); font-weight:600;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--ice);
+  margin:0 0 24px; padding-bottom:12px; border-bottom:1px solid var(--line);
+}
+.grid{display:grid; gap:28px 40px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+.grid h3{font-size:1rem; margin:0 0 6px; font-weight:620}
+.grid p{margin:0; color:var(--muted); font-size:.94rem}
+.two{display:grid; gap:40px; grid-template-columns:1fr 1fr; align-items:start}
+@media (max-width:720px){.two{grid-template-columns:1fr}}
+
+table{width:100%; border-collapse:collapse; font-size:.92rem}
+th,td{text-align:left; padding:11px 12px; border-bottom:1px solid var(--line)}
+th{color:var(--dim); font-weight:600; font-size:.78rem; letter-spacing:.06em; text-transform:uppercase}
+td:first-child{font-family:var(--mono); color:var(--fg); white-space:nowrap}
+td{color:var(--muted)}
+
+pre{
+  background:var(--surface); border:1px solid var(--line); border-radius:10px;
+  padding:16px 18px; overflow-x:auto; margin:0 0 14px;
+  font-family:var(--mono); font-size:.86rem; line-height:1.55; color:var(--fg);
+}
+pre .c{color:var(--dim)}
+h3.alt{font-size:.95rem; margin:0 0 10px; font-weight:620}
+.alt-block+.alt-block{margin-top:28px}
+
+footer{
+  margin-top:86px; padding:32px 0 56px; border-top:1px solid var(--line);
+  color:var(--dim); font-size:.88rem;
+  display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;
+}
+footer a{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="logo"><a href="../" style="color:inherit;text-decoration:none">tui</a> / nhl-tui</p>
+  <h1>The NHL,<br>in your <span class="accent">terminal</span>.</h1>
+  <p class="tagline">
+    Live scores, the wild card race, the schedule, and the scoring leaders.
+    Pick a game and get the whole boxscore, period by period.
+    <strong>No API key. No signup.</strong>
+  </p>
+  <p class="badges">
+    <span>Linux &middot; macOS</span>
+    <span>~2 MB binary</span>
+    <span>MIT</span>
+  </p>
+
+  <div class="install">
+    <p class="install-label">Install</p>
+    <div class="cmd">
+      <code id="cmd"><span class="prompt">$ </span>curl -fsSL https://jp30566347.github.io/tui/nhl-tui/install.sh | sh</code>
+      <button class="copy" id="copy" type="button" data-cmd="curl -fsSL https://jp30566347.github.io/tui/nhl-tui/install.sh | sh">Copy</button>
+    </div>
+    <p class="install-note">
+      Drops a single binary in <code>~/.local/bin</code>. Verifies its checksum. Then run <code>nhl-tui</code>.
+    </p>
+  </div>
+
+  <figure class="shot">
+    <img src="screenshot.png" alt="nhl-tui showing a full slate of final scores for one night, with the selected game highlighted and a prompt to open its boxscore." width="2108" height="1094">
+    <figcaption>A night's scores. Press Enter on any game.</figcaption>
+  </figure>
+</header>
+
+<section>
+  <h2>Five tabs</h2>
+  <div class="grid">
+    <div>
+      <h3>Scores</h3>
+      <p>Every game on a given day, live or final. Step by day or week, or jump straight to a date.</p>
+    </div>
+    <div>
+      <h3>Standings</h3>
+      <p>By division, conference, league, or the wild card race with the playoff cut line drawn in.</p>
+    </div>
+    <div>
+      <h3>Schedule</h3>
+      <p>The week ahead, grouped by day, with start times in your own timezone.</p>
+    </div>
+    <div>
+      <h3>Skaters</h3>
+      <p>Leaders in points, goals, assists and plus-minus.</p>
+    </div>
+    <div>
+      <h3>Goalies</h3>
+      <p>Leaders in wins, goals-against average, save percentage and shutouts.</p>
+    </div>
+    <div>
+      <h3>Your team</h3>
+      <p>Pass <code>--team TOR</code> and it stays highlighted wherever it appears.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>The wild card race</h2>
+  <figure class="shot" style="margin-top:0">
+    <img src="standings.png" alt="The standings tab in wild card mode: division leaders, then the two wild card holders, then a dotted cut line separating the teams on the outside." width="2252" height="1169">
+    <figcaption>The dotted line is the playoff cut. Green marks a team holding a spot.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>The whole boxscore</h2>
+  <figure class="shot" style="margin-top:0">
+    <img src="boxscore.png" alt="A boxscore overlay: goals and shots by period for both teams, every goal with its scorers and assists, all penalties, and the three stars." width="2108" height="1394">
+    <figcaption>Goals and shots by period, every goal and assist, penalties, and the three stars.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Keys</h2>
+  <div class="two">
+    <table>
+      <tr><td>j k</td><td>move the selection</td></tr>
+      <tr><td>h l</td><td>previous or next day, or cycle category</td></tr>
+      <tr><td>H L</td><td>jump a week</td></tr>
+      <tr><td>n p</td><td>next or previous day with games</td></tr>
+    </table>
+    <table>
+      <tr><td>d</td><td>jump to any date</td></tr>
+      <tr><td>t</td><td>back to today</td></tr>
+      <tr><td>Enter</td><td>open the boxscore</td></tr>
+      <tr><td>? q</td><td>help, quit</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <h2>Other ways to install</h2>
+  <div class="two">
+    <div>
+      <div class="alt-block">
+        <h3 class="alt">Homebrew</h3>
+        <pre>brew install jp30566347/tap/nhl-tui</pre>
+      </div>
+      <div class="alt-block">
+        <h3 class="alt">Arch, Omarchy, any pacman distro</h3>
+        <pre><span class="c"># build and install a real package</span>
+git clone https://github.com/jp30566347/tui
+cd tui/nhl-tui &amp;&amp; makepkg -si</pre>
+      </div>
+    </div>
+    <div>
+      <div class="alt-block">
+        <h3 class="alt">From source</h3>
+        <pre>cargo install --git https://github.com/jp30566347/tui nhl-tui</pre>
+      </div>
+      <div class="alt-block">
+        <h3 class="alt">Download a binary</h3>
+        <pre><span class="c"># pick your platform</span>
+<a href="https://github.com/jp30566347/tui/releases">github.com/jp30566347/tui/releases</a></pre>
+        <p style="color:var(--muted); font-size:.9rem; margin:0">
+          Static musl builds for x86-64 and ARM Linux, and native builds for
+          Intel and Apple silicon Macs. Every archive ships a SHA-256 file
+          beside it. A Windows zip is built too, but it has never been run on
+          Windows, so treat it as untested.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Where the data comes from</h2>
+  <table>
+    <thead><tr><th>What</th><th>Endpoint</th><th>Refresh</th></tr></thead>
+    <tbody>
+      <tr><td>Scores</td><td>the NHL's own public API</td><td>30 s</td></tr>
+      <tr><td>Standings, schedule</td><td>same</td><td>5 min</td></tr>
+      <tr><td>Leaders</td><td>same</td><td>5 min</td></tr>
+    </tbody>
+  </table>
+  <p style="color:var(--muted); font-size:.92rem; margin-top:18px">
+    Public and keyless, which is why there is nothing to configure. Only the
+    feeds that have gone stale are refetched, so a day of watching costs very
+    little traffic.
+  </p>
+  <p style="color:var(--muted); font-size:.92rem">
+    The app renders to stderr, so stdout stays free and piping it is safe.
+  </p>
+</section>
+
+<footer>
+  <span>MIT licensed. Built with <a href="https://ratatui.rs">ratatui</a>.</span>
+  <span><a href="https://github.com/jp30566347/tui">Source on GitHub</a></span>
+</footer>
+
+</div>
+
+<script>
+(function () {
+  var button = document.getElementById('copy');
+
+  function legacyCopy(text) {
+    var field = document.createElement('textarea');
+    field.value = text;
+    field.setAttribute('readonly', '');
+    field.style.cssText = 'position:fixed;top:-9999px;opacity:0';
+    document.body.appendChild(field);
+    field.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(field);
+    return ok;
+  }
+
+  function copy(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      // Raced against a timeout: a browser that puts the write behind a
+      // permission prompt can leave the promise unresolved, and the button
+      // would then never give any feedback at all.
+      var timeout = new Promise(function (_, reject) {
+        setTimeout(function () { reject(new Error('timed out')); }, 1200);
+      });
+      return Promise.race([navigator.clipboard.writeText(text), timeout])
+        .then(function () { return true; })
+        .catch(function () { return legacyCopy(text); });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+
+  button.addEventListener('click', function () {
+    copy(button.dataset.cmd).then(function (ok) {
+      button.textContent = ok ? 'Copied' : 'Press ⌘C';
+      button.classList.toggle('done', ok);
+      setTimeout(function () {
+        button.textContent = 'Copy';
+        button.classList.remove('done');
+      }, 1800);
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["crates/tui-common", "macro-tui", "nhl-tui"]
+
+# Shared by both applications, so a bump happens in one place.
+[workspace.dependencies]
+ratatui = { version = "0.30", features = ["crossterm"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tokio-util = "0.7"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+color-eyre = "0.6"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+toml = "1"
+dirs = "6"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/jp30566347/tui"
+homepage = "https://jp30566347.github.io/tui"
+
+[profile.release]
+lto = true
+strip = "symbols"
+opt-level = 3
+codegen-units = 1

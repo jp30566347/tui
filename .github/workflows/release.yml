@@ -1,0 +1,130 @@
+name: Release
+
+# One repo, two applications, so the tag carries which one is being released:
+# macro-tui-v1.2.3 or nhl-tui-v1.2.3. Only that package is built.
+on:
+  push:
+    tags: ["*-v[0-9]+.[0-9]+.[0-9]+"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  meta:
+    name: Read the tag
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.split.outputs.app }}
+      version: ${{ steps.split.outputs.version }}
+    steps:
+      - id: split
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          app="${tag%-v*}"
+          version="${tag##*-v}"
+          case "$app" in
+            macro-tui|nhl-tui) ;;
+            *) echo "::error::unknown application '$app' in tag '$tag'"; exit 1 ;;
+          esac
+          echo "app=$app" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ needs.meta.outputs.app }} ${{ matrix.target }}
+    needs: meta
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use-cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            use-cross: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            use-cross: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use-cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          target: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use-cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build (cross)
+        if: matrix.use-cross
+        run: cross build -p ${{ needs.meta.outputs.app }} --release --locked --target ${{ matrix.target }}
+
+      - name: Build (native)
+        if: "!matrix.use-cross"
+        run: cargo build -p ${{ needs.meta.outputs.app }} --release --locked --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: "!contains(matrix.target, 'windows')"
+        run: |
+          app=${{ needs.meta.outputs.app }}
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../$app-${{ matrix.target }}.tar.gz $app
+          cd ../../..
+          # The macOS runners ship BSD shasum, not GNU coreutils, so
+          # sha256sum is not there to be called.
+          archive=$app-${{ matrix.target }}.tar.gz
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+
+      - name: Package (windows)
+        if: contains(matrix.target, 'windows')
+        shell: pwsh
+        run: |
+          $app = "${{ needs.meta.outputs.app }}"
+          $archive = "$app-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/$app.exe" -DestinationPath $archive
+          (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() + "  $archive" | Out-File -Encoding utf8 "$archive.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.meta.outputs.app }}-${{ matrix.target }}
+          path: |
+            ${{ needs.meta.outputs.app }}-${{ matrix.target }}.*
+          retention-days: 1
+
+  release:
+    name: Release
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ needs.meta.outputs.app }} v${{ needs.meta.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/*
