@@ -1,6 +1,6 @@
 [package]
 name = "nhl-tui"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 description = "NHL scores and stats in your terminal"
 license.workspace = true

@@ -1,6 +1,6 @@
 # Maintainer: JP Melanson <1215807+jp30566347@users.noreply.github.com>
 pkgname=macro-tui
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc="Macro market overview and news in your terminal"
 arch=('x86_64' 'aarch64')
