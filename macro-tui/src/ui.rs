@@ -13,9 +13,10 @@ use ratatui::{
     Frame,
 };
 
+use crate::api::article::{Article, Block as Text};
 use crate::api::models::{Quote, Series};
 use crate::api::rss::Headline;
-use crate::app::{App, Range, Tab};
+use crate::app::{App, Range, Story, Tab};
 use crate::catalog::{format_percent, Group, Instrument, INSTRUMENTS};
 use tui_common::layout::{centered_size, pad_left, pad_to_width, panel, scroll_offset, truncate};
 
@@ -28,6 +29,11 @@ const HEADING: Style = Style::new().fg(Color::Cyan);
 const MUTED: Style = Style::new().fg(Color::DarkGray);
 const UP: Style = Style::new().fg(Color::Green);
 const DOWN: Style = Style::new().fg(Color::Red);
+const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+
+/// The reader's measure. Lines much longer than this are hard to track back
+/// to the start of the next one, however wide the terminal.
+const READER_WIDTH: usize = 92;
 
 /// Below this width the news rail is dropped so the numbers stay readable.
 const RAIL_MIN_WIDTH: u16 = 100;
@@ -68,7 +74,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             .max(1) as usize,
     );
 
-    if app.detail.is_some() {
+    if app.reader.is_some() {
+        draw_reader(f, app, chunks[1]);
+    } else if app.detail.is_some() {
         draw_detail(f, app, chunks[1]);
     } else {
         match app.active_tab {
@@ -122,7 +130,7 @@ fn draw_board(f: &mut Frame, app: &App, area: Rect) {
             app.rail_scroll,
             rail,
             &title,
-            " n/N scroll \u{00b7} f all \u{00b7} o open ",
+            " n/N scroll \u{00b7} f all \u{00b7} o read \u{00b7} c card ",
         );
     }
 }
@@ -250,17 +258,17 @@ fn ticker_row(
 
 fn draw_news(f: &mut Frame, app: &App, area: Rect) {
     let headlines = app.filtered_headlines();
-    let source = app
+    let section = app
         .news_filter
-        .map(|s| s.as_str().to_string())
-        .unwrap_or_else(|| "all sources".into());
+        .map(|s| s.name().to_string())
+        .unwrap_or_else(|| "all sections".into());
     draw_headline_pane(
         f,
         &headlines,
         app.news_scroll,
         area,
-        &format!("News \u{00b7} {source}"),
-        " j/k \u{2195} \u{00b7} h/l source \u{00b7} Enter open ",
+        &format!("News \u{00b7} {section}"),
+        " j/k \u{2195} \u{00b7} h/l section \u{00b7} Enter read \u{00b7} c card ",
     );
 }
 
@@ -342,6 +350,202 @@ fn age(h: &Headline) -> String {
     }
 }
 
+// --- reader --------------------------------------------------------------
+
+/// The story, wrapped to a reading measure, over whichever view opened it.
+fn draw_reader(f: &mut Frame, app: &App, area: Rect) {
+    let Some(reader) = &app.reader else {
+        return;
+    };
+    let headline = &reader.headline;
+    let block = panel(
+        format!(
+            " {} \u{00b7} {} ",
+            headline.source.publisher(),
+            headline.source.name()
+        ),
+        " j/k \u{2195} \u{00b7} c copy card \u{00b7} Esc back ",
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    // Page keys should move by the reader's own height, which has no group
+    // headings in it.
+    app.viewport_rows.set(inner.height.max(1) as usize);
+
+    // A two-column gutter each side, and the measure beyond that.
+    let width = (inner.width as usize).saturating_sub(4).min(READER_WIDTH);
+    if width < 8 || inner.height == 0 {
+        return;
+    }
+    let lines = reader_lines(headline, app.story(), width);
+    let max = lines.len().saturating_sub(inner.height as usize);
+    app.reader_max_scroll.set(max);
+    let offset = reader.scroll.min(max);
+    f.render_widget(
+        Paragraph::new(lines[offset..].to_vec()),
+        Rect {
+            x: inner.x + 2,
+            y: inner.y,
+            width: width as u16,
+            height: inner.height,
+        },
+    );
+}
+
+/// Every line of the reader: the headline, a byline, then the story or a
+/// note on why it is not there yet.
+fn reader_lines(headline: &Headline, story: Option<&Story>, width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+    let article = match story {
+        Some(Story::Ready(article)) => Some(article.as_ref()),
+        _ => None,
+    };
+
+    let title = article
+        .map(|a| a.title.as_str())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(&headline.title);
+    for line in wrap(title, width) {
+        lines.push(Line::from(Span::styled(line, BOLD)));
+    }
+
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(byline) = article.and_then(|a| a.byline.as_deref()) {
+        meta.push(format!("By {byline}"));
+    }
+    if let Some(at) = article.and_then(|a| a.published).or(headline.published) {
+        meta.push(
+            at.with_timezone(&Local)
+                .format("%-d %b %Y, %H:%M")
+                .to_string(),
+        );
+    }
+    if let Some(section) = article.and_then(|a| a.section.as_deref()) {
+        meta.push(section.to_string());
+    }
+    if !meta.is_empty() {
+        for line in wrap(&meta.join(" \u{00b7} "), width) {
+            lines.push(Line::from(Span::styled(line, MUTED)));
+        }
+    }
+    lines.push(Line::default());
+
+    match article {
+        Some(article) => push_article(&mut lines, article, width),
+        None => {
+            if !headline.description.is_empty() {
+                for line in wrap(&headline.description, width) {
+                    lines.push(Line::from(line));
+                }
+                lines.push(Line::default());
+            }
+            match story {
+                Some(Story::Failed(e)) => {
+                    for line in wrap(&format!("Could not load the story: {e}"), width) {
+                        lines.push(Line::from(Span::styled(line, DOWN)));
+                    }
+                    lines.push(Line::from(Span::styled("Press r to try again.", MUTED)));
+                }
+                _ => lines.push(Line::from(Span::styled("Loading the story\u{2026}", MUTED))),
+            }
+        }
+    }
+    lines
+}
+
+fn push_article(lines: &mut Vec<Line<'static>>, article: &Article, width: usize) {
+    if !article.key_points.is_empty() {
+        lines.push(Line::from(Span::styled("Key points", HEADING)));
+        for point in &article.key_points {
+            push_bullet(lines, point, width);
+        }
+        lines.push(Line::default());
+    }
+    for block in &article.body {
+        match block {
+            Text::Paragraph(text) => {
+                for line in wrap(text, width) {
+                    lines.push(Line::from(line));
+                }
+                lines.push(Line::default());
+            }
+            Text::Heading(text) => {
+                for line in wrap(text, width) {
+                    lines.push(Line::from(Span::styled(
+                        line,
+                        HEADING.add_modifier(Modifier::BOLD),
+                    )));
+                }
+                lines.push(Line::default());
+            }
+            Text::Quote(text) => {
+                for line in wrap(text, width.saturating_sub(2)) {
+                    lines.push(Line::from(vec![
+                        Span::styled("\u{2502} ", HEADING),
+                        Span::styled(line, Style::new().add_modifier(Modifier::ITALIC)),
+                    ]));
+                }
+                lines.push(Line::default());
+            }
+            Text::Bullet(text) => push_bullet(lines, text, width),
+        }
+    }
+    if article.premium {
+        lines.push(Line::from(Span::styled(
+            "A CNBC Pro story: only the free preview is available.",
+            MUTED,
+        )));
+    }
+}
+
+/// A bullet with a hanging indent, so a wrapped point reads as one item.
+fn push_bullet(lines: &mut Vec<Line<'static>>, text: &str, width: usize) {
+    for (n, line) in wrap(text, width.saturating_sub(2)).into_iter().enumerate() {
+        let marker = if n == 0 { "\u{2022} " } else { "  " };
+        lines.push(Line::from(vec![
+            Span::styled(marker, HEADING),
+            Span::raw(line),
+        ]));
+    }
+}
+
+/// Greedy word wrap on character count. A word longer than the width is
+/// broken rather than left to overflow, which a URL in a story would do.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut used = 0usize;
+    for word in text.split_whitespace() {
+        let len = word.chars().count();
+        if used > 0 && used + 1 + len > width {
+            lines.push(std::mem::take(&mut line));
+            used = 0;
+        }
+        if len > width {
+            for c in word.chars() {
+                if used == width {
+                    lines.push(std::mem::take(&mut line));
+                    used = 0;
+                }
+                line.push(c);
+                used += 1;
+            }
+            continue;
+        }
+        if used > 0 {
+            line.push(' ');
+            used += 1;
+        }
+        line.push_str(word);
+        used += len;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 // --- detail --------------------------------------------------------------
 
 fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
@@ -351,7 +555,7 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
 
     let block = panel(
         format!(" {} \u{00b7} {} ", instrument.name, instrument.cnbc),
-        " h/l range \u{00b7} j/k headlines \u{00b7} o open \u{00b7} Esc back ",
+        " h/l range \u{00b7} j/k headlines \u{00b7} o read \u{00b7} c card \u{00b7} Esc back ",
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -650,6 +854,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             DOWN,
         ));
     }
+    match &app.notice {
+        Some(Ok(note)) => spans.push(Span::styled(format!("   \u{2713} {note}"), UP)),
+        Some(Err(note)) => spans.push(Span::styled(format!("   \u{26a0} {note}"), DOWN)),
+        None => {}
+    }
 
     let hint = "[?] help  [r]efresh  [q]uit ";
     let left = Line::from(spans);
@@ -669,18 +878,19 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let rows: &[(&str, &str)] = &[
         ("1 / 2, Tab", "switch between the board and news"),
-        ("j / k, arrows", "move the selection"),
+        ("j / k, arrows", "move the selection, or scroll a story"),
         ("Ctrl-D / Ctrl-U", "half page down / up"),
         ("g / G, Home/End", "first / last row"),
-        ("h / l", "board: jump group   news: cycle source"),
+        ("h / l", "board: jump group   news: cycle section"),
         ("", "detail: switch the chart range"),
         ("Enter", "board: open the detail view"),
-        ("", "news: open the story"),
+        ("", "news: read the story, right here"),
         ("n / N", "scroll the board's news rail"),
         ("f", "rail: matched headlines or the whole pool"),
-        ("o", "open the selected story in a browser"),
-        ("r", "refresh everything now"),
-        ("Esc", "close the detail view or this overlay"),
+        ("o", "read the selected story"),
+        ("c", "copy the story as an image, ready to paste in a post"),
+        ("r", "refresh everything now, or retry a story"),
+        ("Esc", "close the story, the detail view or this overlay"),
         ("q / Ctrl-C", "quit"),
     ];
 
@@ -778,5 +988,77 @@ mod tests {
     fn chart_bounds_never_anchor_at_zero() {
         let (low, _) = bounds(&series(&[7700.0, 7750.0]));
         assert!(low > 7000.0, "bounds must follow the data, got {low}");
+    }
+
+    #[test]
+    fn wrap_breaks_between_words_and_inside_words_that_do_not_fit() {
+        assert_eq!(
+            wrap("the quick brown fox", 9),
+            vec!["the quick", "brown fox"]
+        );
+        assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("a  b", 10), vec!["a b"]);
+        assert!(wrap("", 10).is_empty());
+    }
+
+    #[test]
+    fn wrap_counts_characters_not_bytes() {
+        assert_eq!(wrap("caf\u{e9} au lait", 7), vec!["caf\u{e9} au", "lait"]);
+    }
+
+    #[test]
+    fn a_loading_story_shows_the_summary_and_says_it_is_loading() {
+        let headline = Headline {
+            title: "Payrolls rose".into(),
+            link: "https://www.cnbc.com/x".into(),
+            description: "More than expected.".into(),
+            published: None,
+            source: crate::api::rss::Source::Top,
+            haystack: String::new(),
+        };
+        let lines = reader_lines(&headline, Some(&Story::Loading), 40);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text[0], "Payrolls rose");
+        assert!(text.contains(&"More than expected.".to_string()));
+        assert!(text.last().unwrap().starts_with("Loading"));
+    }
+
+    #[test]
+    fn a_loaded_story_lists_its_key_points_before_the_body() {
+        let headline = Headline {
+            title: "t".into(),
+            link: "https://www.cnbc.com/x".into(),
+            description: String::new(),
+            published: None,
+            source: crate::api::rss::Source::Top,
+            haystack: String::new(),
+        };
+        let article = Box::new(Article {
+            title: "The real title".into(),
+            byline: Some("A Reporter".into()),
+            key_points: vec!["One.".into()],
+            body: vec![
+                Text::Paragraph("Body.".into()),
+                Text::Heading("Sub".into()),
+                Text::Quote("Said.".into()),
+            ],
+            ..Article::default()
+        });
+        let story = Story::Ready(article);
+        let text: Vec<String> = reader_lines(&headline, Some(&story), 40)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(text[0], "The real title");
+        assert_eq!(text[1], "By A Reporter");
+        let at = |s: &str| {
+            text.iter()
+                .position(|l| l == s)
+                .unwrap_or_else(|| panic!("{s:?} missing in {text:?}"))
+        };
+        assert!(at("Key points") < at("\u{2022} One."));
+        assert!(at("\u{2022} One.") < at("Body."));
+        assert!(at("Body.") < at("Sub"));
+        assert!(at("Sub") < at("\u{2502} Said."));
     }
 }

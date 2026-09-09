@@ -12,7 +12,7 @@ use tui_common::terminal;
 
 use crate::action::Action;
 use crate::app::App;
-use crate::ui;
+use crate::{card, ui};
 
 /// Quotes are one cheap request, so the board can be near-live. What the other
 /// feeds cost is decided by `App::plan`, not here.
@@ -74,11 +74,17 @@ impl Tui {
                     Action::Refresh => app.spawn_fetch(self.action_tx.clone(), false),
                     Action::ForceRefresh => app.spawn_fetch(self.action_tx.clone(), true),
                     Action::Fetched(fetched) => app.apply_fetch(*fetched),
-                    Action::OpenUrl(url) => {
-                        if let Err(e) = terminal::open_url(&url) {
-                            app.error = Some(e);
-                        }
+                    Action::FetchStory(link) => app.spawn_story(self.action_tx.clone(), link),
+                    Action::StoryFetched(link, result) => app.apply_story(link, result),
+                    // Rasterising and encoding the card takes a noticeable
+                    // fraction of a second, so it runs off the UI thread.
+                    Action::Share(card) => {
+                        let tx = self.action_tx.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let _ = tx.send(Action::Shared(card::share(&card)));
+                        });
                     }
+                    Action::Shared(result) => app.apply_shared(result),
                 }
             }
 

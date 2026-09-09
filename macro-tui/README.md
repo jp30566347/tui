@@ -8,7 +8,8 @@ Twenty-six instruments on one screen: US indices and volatility, Treasury
 yields and the dollar, commodities, foreign exchange and crypto, and the G7
 world indices. Each row carries a live price, its move, and a month of daily
 closes as a trend line. Pick one and get a full chart plus the headlines that
-mention it.
+mention it. Pick a headline and read the whole story without leaving the
+terminal, or turn it into an image ready to paste into a post.
 
 No API key, no signup, no configuration. It works the moment it starts.
 
@@ -37,17 +38,36 @@ source.
 | `j` `k`, arrows | move the selection |
 | `Ctrl-D` `Ctrl-U` | half page down / up |
 | `g` `G`, Home/End | first / last row |
-| `h` `l` | board: jump group. news: cycle source. detail: switch chart range |
-| `Enter` | board: open the detail view. news: open the story |
+| `h` `l` | board: jump group. news: cycle section. detail: switch chart range |
+| `Enter` | board: open the detail view. news: read the story |
 | `n` `N` | scroll the board's news rail |
 | `f` | rail: matched headlines, or the whole pool |
-| `o` | open the selected story in a browser |
-| `r` | refresh everything now |
-| `Esc` | close the detail view or an overlay. Never quits |
+| `o` | read the selected story |
+| `c` | copy the selected story as an image, for a post |
+| `r` | refresh everything now, or retry a story that failed to load |
+| `Esc` | close the story, the detail view or an overlay. Never quits |
 | `q`, `Ctrl-C` | quit |
 
 `macro-tui --list-symbols` prints the board. `--tab 2` starts on news, and
 `--save-config` remembers it.
+
+## Reading and sharing a story
+
+`Enter` on a headline opens the story in the terminal: CNBC's key points,
+then the body, wrapped to a reading measure and scrolled with the usual keys.
+Nothing is handed to a browser, so it works over SSH and in a terminal with
+nothing else installed.
+
+`c` renders the selected story as a 1600 by 900 image and copies it to the
+clipboard, so it can be pasted straight into a post on X or anywhere else that
+takes an image. The same file is written under `~/Pictures/macro-tui/` (or the
+cache directory on a platform without a pictures folder) for attaching later.
+The clipboard holds the image for as long as macro-tui runs; the file stays.
+
+![A share card](docs/card.png)
+
+The card uses the story's own key points once it has been opened, and the
+feed's one-line summary before that.
 
 ## Where the data comes from
 
@@ -55,11 +75,16 @@ source.
 |---|---|---|
 | Quotes | CNBC, all 26 in one request | 15 s |
 | Daily closes | MarketWatch timeseries, all 26 in one request | 15 min |
-| Headlines | CNBC top, economy and finance; MarketWatch; the FT | 5 min |
+| Headlines | CNBC top news, economy and finance | 5 min |
+| Stories | The CNBC article page, when a headline is opened | cached per session |
 
 All of them are public and keyless. Prices come from the exchanges' own feeds
 via CNBC and are real-time for indices; treat them as indicative rather than as
 something to trade against.
+
+Only CNBC's feeds are carried because every source has to serve the whole
+story to the app. MarketWatch and the FT answer their article pages with a
+401 and a 403, so their headlines would have led nowhere.
 
 The app renders to stderr, so stdout stays free and piping it is safe.
 
@@ -91,6 +116,17 @@ only falls back to the reported fields when there is no previous close.
 
 The user agent string is also load-bearing: the quote endpoint's CDN answers a
 default client string with a 403.
+
+**Stories are read from CNBC's embedded page data.** An article page carries
+the document its front end hydrates from as `window.__s_data`, and the reader
+takes the story's text from that tree rather than from the markup around it,
+which changes with every redesign. The live checks above include one that
+opens the newest story in every feed and fails if the body comes back empty.
+
+**The share card's fonts are compiled in.** `assets/fonts/` holds Inter,
+subset to Latin and with its kerning folded into a legacy `kern` table, which
+is the one the rasteriser reads. They are under the SIL Open Font License;
+see the licence file beside them.
 
 ## License
 

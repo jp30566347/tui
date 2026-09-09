@@ -32,3 +32,6 @@ chrono.workspace = true
 toml.workspace = true
 dirs.workspace = true
 quick-xml = "0.42"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ab_glyph = "0.2"
+arboard = { version = "3.6", default-features = false, features = ["image-data", "wayland-data-control"] }

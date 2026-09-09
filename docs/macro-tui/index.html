@@ -192,7 +192,7 @@ footer a{color:var(--muted)}
     </div>
     <div>
       <h3>The news moving them</h3>
-      <p>Five feeds merged and deduplicated, filtered to whatever row you have selected.</p>
+      <p>CNBC's top, economy and finance feeds merged and deduplicated, filtered to whatever row you have selected. Open a headline and the whole story is right there in the terminal.</p>
     </div>
   </div>
 </section>
@@ -202,6 +202,20 @@ footer a{color:var(--muted)}
   <figure class="shot" style="margin-top:0">
     <img src="detail.png" alt="The detail view for the S&P 500: last price and move, open, high, low and previous close, a 52-week range bar, a braille line chart of the last month, and related headlines." width="2180" height="1394">
     <figcaption>A chart scaled to the data, not to zero, plus the headlines that mention it.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Read it here, share it there</h2>
+  <p style="color:var(--muted); font-size:.95rem; margin-top:0">
+    A headline opens into the full story without leaving the terminal: CNBC's
+    key points, then the body, wrapped to a reading measure. Press <code>c</code>
+    and the story becomes a 1600 by 900 image on your clipboard, ready to paste
+    into a post, with a copy saved under <code>~/Pictures/macro-tui/</code>.
+  </p>
+  <figure class="shot" style="margin-top:0">
+    <img src="card.png" alt="A share card: a CNBC Economy kicker and the date, the headline U.S. payrolls rose 162,000 in August, much more than expected, three key points beneath it, and cnbc.com in the footer." width="1600" height="900">
+    <figcaption>The share card. The story's own key points, the publisher's domain, nothing to configure.</figcaption>
   </figure>
 </section>
 
@@ -216,7 +230,8 @@ footer a{color:var(--muted)}
     </table>
     <table>
       <tr><td>n N f</td><td>scroll and widen the news rail</td></tr>
-      <tr><td>o</td><td>open a story in your browser</td></tr>
+      <tr><td>o</td><td>read a story, in the terminal</td></tr>
+      <tr><td>c</td><td>copy a story as an image, for a post</td></tr>
       <tr><td>r</td><td>refresh now</td></tr>
       <tr><td>? q</td><td>help, quit</td></tr>
     </table>
@@ -261,7 +276,8 @@ cd macro-tui && makepkg -si</pre>
     <tbody>
       <tr><td>Quotes</td><td>CNBC, all 26 instruments in one request</td><td>15 s</td></tr>
       <tr><td>Daily closes</td><td>MarketWatch timeseries, all 26 in one request</td><td>15 min</td></tr>
-      <tr><td>Headlines</td><td>CNBC top, economy and finance; MarketWatch; the FT</td><td>5 min</td></tr>
+      <tr><td>Headlines</td><td>CNBC top news, economy and finance</td><td>5 min</td></tr>
+      <tr><td>Stories</td><td>The CNBC article page, when a headline is opened</td><td>per session</td></tr>
     </tbody>
   </table>
   <p style="color:var(--muted); font-size:.92rem; margin-top:18px">
