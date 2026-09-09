@@ -1,10 +1,10 @@
 //! The share card: a story rendered as an image, for pasting into a post.
 //!
 //! The card is drawn as a terminal window running macro-tui, so it is
-//! unmistakably from the app: a box-drawing frame with the tab bar in its top
-//! edge, a monospace face throughout, the headline in bold, CNBC's key points
-//! as a list, and, when the story mentions one of the board's instruments,
-//! that row's price, move and month of closes as a ticker strip. A timeline
+//! unmistakably from the app: a box-drawing frame, a monospace face
+//! throughout, the headline in bold, CNBC's key points as a list, and, when
+//! the story mentions one of the board's instruments, that row's price, move
+//! and month of closes as a ticker strip. A timeline
 //! shows an attached image at 16:9, so it is 1600 by 900. Everything is drawn
 //! here with fonts compiled into the binary, so the card looks the same on
 //! every machine and needs nothing installed.
@@ -57,7 +57,6 @@ const BORDER: Rgba<u8> = Rgba([72, 79, 88, 255]);
 const CYAN: Rgba<u8> = Rgba([121, 192, 255, 255]);
 const GREEN: Rgba<u8> = Rgba([63, 185, 80, 255]);
 const RED: Rgba<u8> = Rgba([248, 81, 73, 255]);
-const SELECTED: Rgba<u8> = Rgba([48, 54, 61, 255]);
 
 /// The instrument a story is about, as it reads on the board.
 #[derive(Debug, Clone, PartialEq)]
@@ -114,21 +113,6 @@ pub fn render(card: &Card) -> RgbaImage {
     let top = FRAME;
     let bottom = HEIGHT as f32 - FRAME;
     frame(&mut img, FRAME, top, WIDTH as f32 - FRAME, bottom);
-
-    // The window title and tab bar sit in the top edge, the way the app draws
-    // its own, with the News tab selected.
-    let mut x = FRAME + 24.0;
-    x = label(&mut img, &bold, x, top, " macro-tui ", TEXT, None);
-    x = label(&mut img, &regular, x + 12.0, top, " 1 Board ", MUTED, None);
-    label(
-        &mut img,
-        &bold,
-        x + 8.0,
-        top,
-        " 2 News ",
-        TEXT,
-        Some(SELECTED),
-    );
 
     // Kicker on the left, date on the right.
     let mut y = top + ROW * 1.9;
@@ -229,7 +213,6 @@ pub fn render(card: &Card) -> RgbaImage {
         bottom,
         &format!(" {} ", card.domain),
         MUTED,
-        None,
     );
     let brand = " macro-tui ";
     let w = measure(&regular, BASE, brand);
@@ -240,7 +223,6 @@ pub fn render(card: &Card) -> RgbaImage {
         bottom,
         brand,
         MUTED,
-        None,
     );
 
     img
@@ -265,7 +247,6 @@ fn draw_ticker(img: &mut RgbaImage, regular: &FontRef, bold: &FontRef, ticker: &
         rule_y,
         &format!(" {} ", ticker.name),
         CYAN,
-        None,
     );
 
     let y = rule_y + ROW * 1.3;
@@ -316,17 +297,8 @@ fn frame(img: &mut RgbaImage, left: f32, top: f32, right: f32, bottom: f32) {
 }
 
 /// Text sitting in a frame edge, the way a panel title does: the background
-/// is painted behind it so the line breaks around the words. Returns the x
-/// past the label.
-fn label(
-    img: &mut RgbaImage,
-    font: &FontRef,
-    x: f32,
-    line_y: f32,
-    text: &str,
-    colour: Rgba<u8>,
-    background: Option<Rgba<u8>>,
-) -> f32 {
+/// is painted behind it so the line breaks around the words.
+fn label(img: &mut RgbaImage, font: &FontRef, x: f32, line_y: f32, text: &str, colour: Rgba<u8>) {
     let w = measure(font, BASE, text);
     let h = ROW * 0.9;
     fill(
@@ -335,11 +307,10 @@ fn label(
         (line_y - h / 2.0) as u32,
         w.ceil() as u32,
         h as u32,
-        background.unwrap_or(BACKGROUND),
+        BACKGROUND,
     );
     // A baseline that centres the x-height on the line.
     draw(img, font, BASE, x, line_y + BASE * 0.36, text, colour);
-    x + w
 }
 
 /// The advance of one cell in the monospace face.

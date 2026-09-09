@@ -66,8 +66,8 @@ The clipboard holds the image for as long as macro-tui runs; the file stays.
 
 ![A share card](docs/card.png)
 
-The card is drawn as a terminal window running macro-tui: the tab bar in the
-frame, the headline, the story's own key points (or the feed's one-line
+The card is drawn as a terminal window running macro-tui: a plain frame,
+the headline, the story's own key points (or the feed's one-line
 summary before the story has been opened), and, when the story mentions one
 of the board's instruments, that row's price, move and month of closes as a
 ticker strip. A story opened from a row is tied to that row when it mentions
