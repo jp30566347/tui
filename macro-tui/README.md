@@ -1,6 +1,6 @@
 # macro-tui
 
-[jp30566347.github.io/macro-tui](https://jp30566347.github.io/macro-tui)
+[jp30566347.github.io/tui/macro-tui](https://jp30566347.github.io/tui/macro-tui)
 
 A macro market overview and the news moving it, in your terminal.
 
@@ -13,22 +13,22 @@ terminal, or turn it into an image ready to paste into a post.
 
 No API key, no signup, no configuration. It works the moment it starts.
 
-![The board](docs/screenshot.png)
+![The board](../docs/macro-tui/screenshot.png)
 
 
 ## Install
 
 ```sh
-curl -fsSL https://jp30566347.github.io/macro-tui/install.sh | sh
+curl -fsSL https://jp30566347.github.io/tui/macro-tui/install.sh | sh
 ```
 
 Drops a single binary in `~/.local/bin` after verifying its checksum. On Arch
-and Omarchy, `makepkg -si` in a clone builds a real package instead. There are
-also prebuilt binaries on the [releases page][releases], and
-`cargo install --git https://github.com/jp30566347/macro-tui` builds from
+and Omarchy, `makepkg -si` in this directory builds a real package instead.
+There are also prebuilt binaries on the [releases page][releases], and
+`cargo install --git https://github.com/jp30566347/tui macro-tui` builds from
 source.
 
-[releases]: https://github.com/jp30566347/macro-tui/releases/latest
+[releases]: https://github.com/jp30566347/tui/releases
 
 ## Keys
 
@@ -64,7 +64,7 @@ takes an image. The same file is written under `~/Pictures/macro-tui/` (or the
 cache directory on a platform without a pictures folder) for attaching later.
 The clipboard holds the image for as long as macro-tui runs; the file stays.
 
-![A share card](docs/card.png)
+![A share card](../docs/macro-tui/card.png)
 
 The card is drawn as a terminal window running macro-tui: a plain frame,
 the headline, the story's own key points (or the feed's one-line
