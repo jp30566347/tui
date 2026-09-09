@@ -1,11 +1,16 @@
 //! RSS parsing for the news pane.
 //!
-//! The feeds are ordinary RSS 2.0 but they escape differently from each other:
-//! CNBC sends plain titles beside CDATA descriptions and namespaced siblings
-//! like `metadata:id`, MarketWatch sends numeric character references in its
-//! titles, and the FT wraps every field in CDATA. Getting any of that wrong
-//! shows up as mojibake in a headline rather than as an error, which is why
-//! this uses a real parser.
+//! The feeds are ordinary RSS 2.0, but a feed is free to escape a field any
+//! way it likes: CNBC sends plain titles beside CDATA descriptions and
+//! namespaced siblings like `metadata:id`, and other publishers' feeds have
+//! sent numeric character references in titles or wrapped every field in
+//! CDATA. Getting any of that wrong shows up as mojibake in a headline rather
+//! than as an error, which is why this uses a real parser.
+//!
+//! Only CNBC's feeds are here. Every source has to serve the whole story to
+//! the app, since the reader shows it in the terminal rather than handing a
+//! link to a browser, and CNBC is the one that does: MarketWatch answers its
+//! story pages with a 401 and the FT with a 403.
 
 use chrono::{DateTime, Utc};
 use color_eyre::eyre::{Context, Result};
@@ -15,39 +20,43 @@ use quick_xml::Reader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Source {
-    CnbcTop,
-    CnbcEconomy,
-    CnbcFinance,
-    MarketWatch,
-    FinancialTimes,
+    Top,
+    Economy,
+    Finance,
 }
 
 impl Source {
-    pub const ALL: [Source; 5] = [
-        Source::CnbcTop,
-        Source::CnbcEconomy,
-        Source::CnbcFinance,
-        Source::MarketWatch,
-        Source::FinancialTimes,
-    ];
+    pub const ALL: [Source; 3] = [Source::Top, Source::Economy, Source::Finance];
 
     pub fn url(self) -> &'static str {
         match self {
-            Source::CnbcTop => "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-            Source::CnbcEconomy => "https://www.cnbc.com/id/20910258/device/rss/rss.html",
-            Source::CnbcFinance => "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-            Source::MarketWatch => "https://feeds.content.dowjones.io/public/rss/mw_topstories",
-            Source::FinancialTimes => "https://www.ft.com/markets?format=rss",
+            Source::Top => "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+            Source::Economy => "https://www.cnbc.com/id/20910258/device/rss/rss.html",
+            Source::Finance => "https://www.cnbc.com/id/10000664/device/rss/rss.html",
         }
     }
 
-    /// Short enough for the four-character column in the news list.
+    /// The section, short enough for the four-character column in the news
+    /// list. With one publisher, the section says more than its name would.
     pub fn as_str(self) -> &'static str {
         match self {
-            Source::CnbcTop | Source::CnbcEconomy | Source::CnbcFinance => "CNBC",
-            Source::MarketWatch => "MW",
-            Source::FinancialTimes => "FT",
+            Source::Top => "Top",
+            Source::Economy => "Econ",
+            Source::Finance => "Fin",
         }
+    }
+
+    /// The section spelled out, for a pane title or a share card.
+    pub fn name(self) -> &'static str {
+        match self {
+            Source::Top => "Top news",
+            Source::Economy => "Economy",
+            Source::Finance => "Finance",
+        }
+    }
+
+    pub fn publisher(self) -> &'static str {
+        "CNBC"
     }
 }
 
@@ -55,6 +64,9 @@ impl Source {
 pub struct Headline {
     pub title: String,
     pub link: String,
+    /// The feed's one-line summary. Shown while the story itself is still
+    /// loading, and on a share card when the story has no key points.
+    pub description: String,
     pub published: Option<DateTime<Utc>>,
     pub source: Source,
     /// Lowercased title and description, built once so the per-frame alias
@@ -198,6 +210,7 @@ impl Item {
             haystack: format!("{title} {description}").to_lowercase(),
             title: title.to_string(),
             link: link.to_string(),
+            description: description.to_string(),
             published: parse_date(self.pub_date.trim()),
             source,
         })
@@ -234,22 +247,23 @@ mod tests {
       </item>
     </channel></rss>"#;
 
-    /// MarketWatch escapes its titles with numeric character references.
-    const MW: &str = r#"<rss><channel><item>
+    /// A feed that escapes its titles with numeric character references and
+    /// carries a namespaced `dc:creator`, the way MarketWatch's did.
+    const REFS: &str = r#"<rss><channel><item>
         <guid isPermaLink="false">WP-MKTW-0005216921</guid>
         <title>Adobe just announced its next CEO. Here&#x2019;s why its stock is dropping.</title>
         <description>Incoming CEO is a company veteran &amp; a longtime head.</description>
-        <link>https://www.marketwatch.com/story/adobe-ceo-bad9ed8a</link>
+        <link>https://www.example.com/story/adobe-ceo-bad9ed8a</link>
         <pubDate>Fri, 04 Sep 2026 13:42:00 GMT</pubDate>
         <dc:creator>A Reporter</dc:creator>
       </item></channel></rss>"#;
 
-    /// The FT wraps every single field in CDATA.
-    const FT: &str = r#"<rss><channel><item><title><![CDATA[Japan&#8217;s vital link between Bessent and markets]]></title><description><![CDATA[A pivotal figure for relations with Washington]]></description><link>https://www.ft.com/content/d8f53899</link><guid isPermaLink="false">d8f53899</guid><pubDate>Fri, 04 Sep 2026 12:00:06 GMT</pubDate></item></channel></rss>"#;
+    /// A feed that wraps every single field in CDATA, the way the FT's does.
+    const CDATA: &str = r#"<rss><channel><item><title><![CDATA[Japan&#8217;s vital link between Bessent and markets]]></title><description><![CDATA[A pivotal figure for relations with Washington]]></description><link>https://www.example.com/content/d8f53899</link><guid isPermaLink="false">d8f53899</guid><pubDate>Fri, 04 Sep 2026 12:00:06 GMT</pubDate></item></channel></rss>"#;
 
     #[test]
     fn cnbc_items_yield_a_title_a_link_and_a_timestamp() {
-        let items = parse(CNBC, Source::CnbcTop).unwrap();
+        let items = parse(CNBC, Source::Top).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(
             items[0].title,
@@ -263,33 +277,37 @@ mod tests {
     /// Neither may become a headline or overwrite one.
     #[test]
     fn elements_outside_an_item_and_namespaced_siblings_are_ignored() {
-        let items = parse(CNBC, Source::CnbcTop).unwrap();
+        let items = parse(CNBC, Source::Top).unwrap();
         assert_eq!(items.len(), 1);
         assert!(!items[0].title.contains("Top News"));
         assert!(!items[0].title.contains("108358891"));
     }
 
     #[test]
-    fn marketwatch_titles_have_their_character_references_unescaped() {
-        let items = parse(MW, Source::MarketWatch).unwrap();
+    fn character_references_in_titles_are_unescaped() {
+        let items = parse(REFS, Source::Top).unwrap();
         assert_eq!(
             items[0].title,
             "Adobe just announced its next CEO. Here\u{2019}s why its stock is dropping."
+        );
+        assert_eq!(
+            items[0].description,
+            "Incoming CEO is a company veteran & a longtime head."
         );
         assert!(items[0].haystack.contains("veteran & a longtime"));
     }
 
     #[test]
-    fn ft_fields_wrapped_in_cdata_come_out_as_plain_text() {
-        let items = parse(FT, Source::FinancialTimes).unwrap();
+    fn fields_wrapped_in_cdata_come_out_as_plain_text() {
+        let items = parse(CDATA, Source::Top).unwrap();
         assert!(items[0].title.starts_with("Japan"));
         assert!(!items[0].title.contains("CDATA"));
-        assert_eq!(items[0].link, "https://www.ft.com/content/d8f53899");
+        assert_eq!(items[0].link, "https://www.example.com/content/d8f53899");
     }
 
     #[test]
     fn the_haystack_is_lowercased_title_and_description() {
-        let items = parse(CNBC, Source::CnbcTop).unwrap();
+        let items = parse(CNBC, Source::Top).unwrap();
         assert!(items[0].haystack.contains("u.s. payrolls rose"));
         assert!(items[0].haystack.contains("nonfarm payrolls"));
         assert!(!items[0].haystack.contains("U.S."));
@@ -299,7 +317,7 @@ mod tests {
     fn an_item_without_a_pubdate_still_parses() {
         let xml = r#"<rss><channel><item><title>No date</title>
                      <link>https://example.com/a</link></item></channel></rss>"#;
-        let items = parse(xml, Source::CnbcTop).unwrap();
+        let items = parse(xml, Source::Top).unwrap();
         assert_eq!(items.len(), 1);
         assert!(items[0].published.is_none());
     }
@@ -311,7 +329,7 @@ mod tests {
             <item><title>Nowhere to go</title></item>
             <item><title>Good</title><link>https://example.com/b</link></item>
           </channel></rss>"#;
-        let items = parse(xml, Source::CnbcTop).unwrap();
+        let items = parse(xml, Source::Top).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].title, "Good");
     }
@@ -320,9 +338,18 @@ mod tests {
     /// showing.
     #[test]
     fn a_truncated_feed_yields_the_items_it_managed_to_read() {
-        let truncated = &FT[..FT.len() - 40];
-        let items = parse(truncated, Source::FinancialTimes).unwrap();
+        let truncated = &CDATA[..CDATA.len() - 40];
+        let items = parse(truncated, Source::Top).unwrap();
         assert_eq!(items.len(), 1);
+    }
+
+    #[test]
+    fn the_description_is_kept_verbatim_beside_the_lowercased_haystack() {
+        let items = parse(CNBC, Source::Top).unwrap();
+        assert_eq!(
+            items[0].description,
+            "Nonfarm payrolls were expected to increase by 53,000."
+        );
     }
 
     #[test]

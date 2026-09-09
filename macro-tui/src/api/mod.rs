@@ -1,9 +1,11 @@
+pub mod article;
 pub mod models;
 pub mod rss;
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use article::Article;
 use color_eyre::eyre::{Context, Result};
 use models::*;
 use rss::{Headline, Source};
@@ -18,9 +20,9 @@ const ENTITLEMENT_TOKEN: &str = "cecc4267a0194af89c1d2a1d05dd7d5e";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Cap on a response body. The largest here is the batched history at ~32 KB,
-/// so this is a wide margin; it exists so a hostile or malfunctioning endpoint
-/// cannot exhaust memory.
+/// Cap on a response body. The largest here is an article page at under a
+/// megabyte, so this is a wide margin; it exists so a hostile or
+/// malfunctioning endpoint cannot exhaust memory.
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Cheap to clone: `reqwest::Client` is internally reference counted.
@@ -151,6 +153,12 @@ impl MarketClient {
         let body = self.get_text(source.url(), "news").await?;
         rss::parse(&body, source)
     }
+
+    /// The whole story behind a headline, for the reader.
+    pub async fn get_article(&self, url: &str) -> Result<Article> {
+        let body = self.get_text(url, "story").await?;
+        article::parse(&body)
+    }
 }
 
 /// Percent-encodes the characters that matter in a query value. The symbol
@@ -248,6 +256,34 @@ mod live {
             }
         }
         assert!(empty.is_empty(), "no history for: {empty:?}");
+    }
+
+    /// The reader depends on CNBC's embedded article document. If its shape
+    /// moves, this is the check that notices.
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn the_newest_story_in_every_feed_still_has_a_body() {
+        let client = MarketClient::new();
+        for source in Source::ALL {
+            let items = client.get_feed(source).await.unwrap();
+            let first = &items[0];
+            let article = client
+                .get_article(&first.link)
+                .await
+                .unwrap_or_else(|e| panic!("{} failed: {e}", first.link));
+            assert!(
+                !article.body.is_empty(),
+                "{} parsed to an empty body",
+                first.link
+            );
+            println!(
+                "  {:<5} {:>2} blocks  {:>2} key points  {}",
+                source.as_str(),
+                article.body.len(),
+                article.key_points.len(),
+                article.title
+            );
+        }
     }
 
     #[tokio::test]

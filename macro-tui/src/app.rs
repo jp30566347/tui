@@ -13,10 +13,12 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::action::Action;
+use crate::api::article::{Article, Block};
 use crate::api::models::{Quote, Series};
 use crate::api::rss::{Headline, Source};
 use crate::api::MarketClient;
-use crate::catalog::{self, Group, Instrument, INSTRUMENTS};
+use crate::card::{self, Card, Ticker};
+use crate::catalog::{self, format_percent, Group, Instrument, INSTRUMENTS};
 use tui_common::layout::cycle;
 
 /// How long news stays fresh before a tick will refetch it.
@@ -109,6 +111,22 @@ pub struct Fetched {
     pub long_history: Option<(&'static str, Result<Series, String>)>,
 }
 
+/// What the reader knows about a story, keyed by its link.
+#[derive(Debug)]
+pub enum Story {
+    Loading,
+    Ready(Box<Article>),
+    Failed(String),
+}
+
+/// The reader, open on one headline. The story itself lives in the cache so
+/// that closing and reopening the reader costs nothing.
+#[derive(Debug, Clone)]
+pub struct Reader {
+    pub headline: Headline,
+    pub scroll: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Plan {
     quotes: bool,
@@ -124,6 +142,12 @@ pub struct App {
     /// selection are one field so they cannot disagree.
     pub detail: Option<usize>,
     pub range: Range,
+    /// `Some` while a story is open in the reader, over whichever view opened
+    /// it.
+    pub reader: Option<Reader>,
+    /// Stories fetched this session, pruned to the headlines still in the
+    /// pool whenever the pool is replaced.
+    pub stories: HashMap<String, Story>,
 
     /// Parallel to `INSTRUMENTS`. `None` means never fetched, or the endpoint
     /// did not recognise the symbol.
@@ -149,6 +173,12 @@ pub struct App {
     /// Rows the content pane last rendered. Written by the UI so page keys
     /// move by an actual screenful; a `Cell` because drawing only borrows.
     pub viewport_rows: Cell<usize>,
+    /// How far the reader can scroll, as the UI last wrapped the story. The
+    /// count depends on the pane width, which only the renderer knows.
+    pub reader_max_scroll: Cell<usize>,
+    /// The outcome of the last share, shown in the status line until the
+    /// next key press. `Err` for a share that only half worked.
+    pub notice: Option<Result<String, String>>,
 
     pub loading: bool,
     pub last_updated: Option<DateTime<Local>>,
@@ -167,6 +197,8 @@ impl App {
             active_tab: Tab::from_index(tab).unwrap_or(Tab::Board),
             detail: None,
             range: Range::OneMonth,
+            reader: None,
+            stories: HashMap::new(),
             quotes: vec![None; INSTRUMENTS.len()],
             headlines: Vec::new(),
             history: HashMap::new(),
@@ -179,6 +211,8 @@ impl App {
             rail_all: false,
             show_help: false,
             viewport_rows: Cell::new(20),
+            reader_max_scroll: Cell::new(0),
+            notice: None,
             loading: false,
             last_updated: None,
             error: None,
@@ -370,11 +404,60 @@ impl App {
             if !merged.is_empty() {
                 self.headlines = dedupe_and_sort(merged);
                 self.news_at = Some(Instant::now());
+                self.prune_stories();
             }
         }
 
         self.error = errors.into_iter().next();
         self.clamp_scroll();
+    }
+
+    /// Fetches one story for the reader, off the UI thread. Separate from the
+    /// feed fetch so a slow page cannot hold up the quotes, and so a refresh
+    /// issued meanwhile cannot supersede it.
+    pub fn spawn_story(&self, tx: UnboundedSender<Action>, link: String) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let result = client
+                .get_article(&link)
+                .await
+                .map(Box::new)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Action::StoryFetched(link, result));
+        });
+    }
+
+    pub fn apply_story(&mut self, link: String, result: Result<Box<Article>, String>) {
+        let story = match result {
+            Ok(article) => Story::Ready(article),
+            Err(e) => Story::Failed(e),
+        };
+        self.stories.insert(link, story);
+    }
+
+    /// Drops cached stories whose headlines have left the pool, so a session
+    /// left running for days does not accumulate every story it ever showed.
+    fn prune_stories(&mut self) {
+        let keep: HashSet<&str> = self
+            .headlines
+            .iter()
+            .map(|h| h.link.as_str())
+            .chain(self.reader.iter().map(|r| r.headline.link.as_str()))
+            .collect();
+        let dropped: Vec<String> = self
+            .stories
+            .keys()
+            .filter(|k| !keep.contains(k.as_str()))
+            .cloned()
+            .collect();
+        for link in dropped {
+            self.stories.remove(&link);
+        }
+    }
+
+    /// The reader's story, if it has arrived.
+    pub fn story(&self) -> Option<&Story> {
+        self.stories.get(&self.reader.as_ref()?.headline.link)
     }
 
     // --- news selection --------------------------------------------------
@@ -401,15 +484,10 @@ impl App {
         &'a self,
         instruments: impl Iterator<Item = &'a Instrument>,
     ) -> Vec<&'a Headline> {
-        let needles: Vec<String> = instruments
-            .flat_map(|i| {
-                std::iter::once(i.name.to_lowercase())
-                    .chain(i.aliases.iter().map(|a| a.to_string()))
-            })
-            .collect();
+        let instruments: Vec<&Instrument> = instruments.collect();
         self.headlines
             .iter()
-            .filter(|h| needles.iter().any(|n| contains_word(&h.haystack, n)))
+            .filter(|h| instruments.iter().any(|i| mentions(&h.haystack, i)))
             .collect()
     }
 
@@ -431,6 +509,8 @@ impl App {
             self.should_quit = true;
             return None;
         }
+        // A share's outcome stays up until the user does something else.
+        self.notice = None;
 
         if self.show_help {
             if matches!(
@@ -448,17 +528,20 @@ impl App {
             let page = (self.page() / 2).max(1) as isize;
             match key.code {
                 KeyCode::Char('d') => {
-                    self.move_selection(page);
+                    self.scroll_by(page);
                     return None;
                 }
                 KeyCode::Char('u') => {
-                    self.move_selection(-page);
+                    self.scroll_by(-page);
                     return None;
                 }
                 _ => {}
             }
         }
 
+        if self.reader.is_some() {
+            return self.handle_reader_key(key);
+        }
         if self.detail.is_some() {
             return self.handle_detail_key(key);
         }
@@ -506,12 +589,41 @@ impl App {
                     // The long range is only fetched when it is asked for.
                     return Some(Action::Refresh);
                 }
-                Tab::News => return self.open_selected_news(),
+                Tab::News => return self.open_selected_story(),
             },
-            KeyCode::Char('o') => return self.open_selected_news(),
+            KeyCode::Char('o') => return self.open_selected_story(),
+            KeyCode::Char('c') => return self.share_selected_story(),
             _ => {}
         }
         self.clamp_scroll();
+        None
+    }
+
+    fn handle_reader_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let page = self.page() as isize;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.reader = None,
+            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('j') | KeyCode::Down => self.scroll_by(1),
+            KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_by(page),
+            KeyCode::PageUp => self.scroll_by(-page),
+            KeyCode::Char('g') | KeyCode::Home => self.scroll_by(isize::MIN / 2),
+            KeyCode::Char('G') | KeyCode::End => self.scroll_by(isize::MAX / 2),
+            KeyCode::Char('c') => {
+                let headline = self.reader.as_ref()?.headline.clone();
+                return Some(Action::Share(Box::new(self.card_for(&headline))));
+            }
+            // A story that failed to load can be asked for again.
+            KeyCode::Char('r') => {
+                let link = self.reader.as_ref()?.headline.link.clone();
+                if matches!(self.stories.get(&link), Some(Story::Failed(_)) | None) {
+                    self.stories.insert(link.clone(), Story::Loading);
+                    return Some(Action::FetchStory(link));
+                }
+            }
+            _ => {}
+        }
         None
     }
 
@@ -551,23 +663,129 @@ impl App {
                 self.rail_all = !self.rail_all;
                 self.detail_news_scroll = 0;
             }
-            KeyCode::Enter | KeyCode::Char('o') => {
-                let (hits, _) = self.related_headlines();
-                let url = hits.get(self.detail_news_scroll).map(|h| h.link.clone());
-                return url.map(Action::OpenUrl);
-            }
+            KeyCode::Enter | KeyCode::Char('o') => return self.open_selected_story(),
+            KeyCode::Char('c') => return self.share_selected_story(),
             _ => {}
         }
         self.clamp_scroll();
         None
     }
 
-    fn open_selected_news(&self) -> Option<Action> {
-        let (list, scroll) = match self.active_tab {
-            Tab::News => (self.filtered_headlines(), self.news_scroll),
-            Tab::Board => (self.related_headlines().0, self.rail_scroll),
+    /// The headline under the cursor of whichever list is in front: the
+    /// detail view's, the News tab's, or the board's rail.
+    fn selected_headline(&self) -> Option<Headline> {
+        let (list, at) = if self.detail.is_some() {
+            (self.related_headlines().0, self.detail_news_scroll)
+        } else {
+            match self.active_tab {
+                Tab::News => (self.filtered_headlines(), self.news_scroll),
+                Tab::Board => (self.related_headlines().0, self.rail_scroll),
+            }
         };
-        list.get(scroll).map(|h| Action::OpenUrl(h.link.clone()))
+        list.get(at).map(|h| (*h).clone())
+    }
+
+    fn open_selected_story(&mut self) -> Option<Action> {
+        let headline = self.selected_headline()?;
+        self.open_story(headline)
+    }
+
+    /// Opens the reader on a headline, fetching the story unless it is
+    /// already cached. A story that failed before is tried again.
+    fn open_story(&mut self, headline: Headline) -> Option<Action> {
+        let link = headline.link.clone();
+        self.reader = Some(Reader {
+            headline,
+            scroll: 0,
+        });
+        self.reader_max_scroll.set(0);
+        match self.stories.get(&link) {
+            Some(Story::Ready(_)) | Some(Story::Loading) => None,
+            Some(Story::Failed(_)) | None => {
+                self.stories.insert(link.clone(), Story::Loading);
+                Some(Action::FetchStory(link))
+            }
+        }
+    }
+
+    fn share_selected_story(&self) -> Option<Action> {
+        let headline = self.selected_headline()?;
+        Some(Action::Share(Box::new(self.card_for(&headline))))
+    }
+
+    /// The share card for a headline: the story's own key points and section
+    /// when it has loaded, the feed's summary otherwise.
+    fn card_for(&self, headline: &Headline) -> Card {
+        let story = match self.stories.get(&headline.link) {
+            Some(Story::Ready(article)) => Some(article.as_ref()),
+            _ => None,
+        };
+        let points = story.map(|a| a.key_points.clone()).unwrap_or_default();
+        let summary = if !headline.description.is_empty() {
+            headline.description.clone()
+        } else {
+            story
+                .and_then(|a| {
+                    a.body.iter().find_map(|b| match b {
+                        Block::Paragraph(p) => Some(p.clone()),
+                        _ => None,
+                    })
+                })
+                .unwrap_or_default()
+        };
+        let section = story
+            .and_then(|a| a.section.clone())
+            .unwrap_or_else(|| headline.source.name().to_string());
+        Card {
+            title: headline.title.clone(),
+            kicker: format!("{} \u{b7} {section}", headline.source.publisher()),
+            published: story.and_then(|a| a.published).or(headline.published),
+            points,
+            summary,
+            domain: card::domain(&headline.link),
+            ticker: self.ticker_for(headline),
+        }
+    }
+
+    /// The board row a story mentions, with its quote and month of closes,
+    /// for the card's ticker strip. The focused instrument wins when the
+    /// story mentions it, so a story opened from a row is tied to that row;
+    /// otherwise the first mentioned instrument in board order. A story that
+    /// mentions nothing on the board, or a row without a quote, gets none.
+    fn ticker_for(&self, headline: &Headline) -> Option<Ticker> {
+        let instrument = std::iter::once(self.focused())
+            .chain(INSTRUMENTS.iter())
+            .find(|i| mentions(&headline.haystack, i))?;
+        let n = INSTRUMENTS.iter().position(|i| i.cnbc == instrument.cnbc)?;
+        let quote = self.quotes[n].as_ref()?;
+        let closes = instrument
+            .history
+            .and_then(|key| self.history.get(&(Range::OneMonth, key)))
+            .map(|series| series.iter().map(|(_, v)| *v).collect())
+            .unwrap_or_default();
+        Some(Ticker {
+            name: instrument.name.to_string(),
+            level: instrument.level(quote.last),
+            change: instrument.change(quote.change),
+            percent: format_percent(quote.change_pct),
+            up: quote.change >= 0.0,
+            closes,
+        })
+    }
+
+    pub fn apply_shared(&mut self, result: Result<String, String>) {
+        self.notice = Some(result);
+    }
+
+    /// Scrolls whatever is in front: the reader when it is open, the list
+    /// otherwise.
+    fn scroll_by(&mut self, delta: isize) {
+        if let Some(reader) = self.reader.as_mut() {
+            let max = self.reader_max_scroll.get() as isize;
+            reader.scroll = (reader.scroll as isize).saturating_add(delta).clamp(0, max) as usize;
+        } else {
+            self.move_selection(delta);
+        }
     }
 
     /// One screenful of rows, as the UI last drew it.
@@ -576,6 +794,12 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        if self.detail.is_some() {
+            let max = self.related_headlines().0.len().saturating_sub(1) as isize;
+            self.detail_news_scroll =
+                (self.detail_news_scroll as isize + delta).clamp(0, max.max(0)) as usize;
+            return;
+        }
         match self.active_tab {
             Tab::Board => self.set_selection(self.board_selected as isize + delta),
             Tab::News => {
@@ -625,6 +849,9 @@ impl App {
         let related = self.related_headlines().0.len();
         self.rail_scroll = self.rail_scroll.min(related.saturating_sub(1));
         self.detail_news_scroll = self.detail_news_scroll.min(related.saturating_sub(1));
+        if let Some(reader) = self.reader.as_mut() {
+            reader.scroll = reader.scroll.min(self.reader_max_scroll.get());
+        }
     }
 }
 
@@ -691,6 +918,15 @@ fn canonical_link(link: &str) -> String {
     link.split(['?', '#']).next().unwrap_or(link).to_lowercase()
 }
 
+/// Whether a headline's haystack mentions an instrument by name or alias.
+fn mentions(haystack: &str, instrument: &Instrument) -> bool {
+    contains_word(haystack, &instrument.name.to_lowercase())
+        || instrument
+            .aliases
+            .iter()
+            .any(|alias| contains_word(haystack, alias))
+}
+
 /// Substring match that will not fire inside a longer word.
 ///
 /// A plain `contains` would match "cac" in "vacation" and "eth" in "whether",
@@ -741,12 +977,36 @@ mod tests {
         Headline {
             title: title.into(),
             link: link.into(),
+            description: format!("About {title}."),
             published: DateTime::parse_from_rfc2822(ts)
                 .ok()
                 .map(|d| d.with_timezone(&Utc)),
             source,
             haystack: title.to_lowercase(),
         }
+    }
+
+    /// An app on the News tab with one story in the pool.
+    fn news_app() -> App {
+        let mut a = app();
+        a.active_tab = Tab::News;
+        a.headlines = vec![headline(
+            "Story",
+            "https://www.cnbc.com/2026/09/09/s.html",
+            "Fri, 04 Sep 2026 13:00:00 GMT",
+            Source::Economy,
+        )];
+        a
+    }
+
+    fn article() -> Box<Article> {
+        Box::new(Article {
+            title: "Story".into(),
+            section: Some("Markets".into()),
+            key_points: vec!["One.".into(), "Two.".into()],
+            body: vec![Block::Paragraph("The body.".into())],
+            ..Article::default()
+        })
     }
 
     #[test]
@@ -886,7 +1146,7 @@ mod tests {
             "x",
             "https://e.com/1",
             "Fri, 04 Sep 2026 12:00:00 GMT",
-            Source::CnbcTop,
+            Source::Top,
         ));
         a.history.insert((Range::OneMonth, "k"), vec![]);
 
@@ -1004,20 +1264,20 @@ mod tests {
                 "old",
                 "https://e.com/a",
                 "Fri, 04 Sep 2026 10:00:00 GMT",
-                Source::CnbcTop,
+                Source::Top,
             ),
             headline(
                 "new",
                 "https://e.com/b",
                 "Fri, 04 Sep 2026 13:00:00 GMT",
-                Source::MarketWatch,
+                Source::Economy,
             ),
             // Same story as the first, with a tracking query appended.
             headline(
                 "old syndicated",
                 "https://e.com/a?syn=1",
                 "Fri, 04 Sep 2026 10:00:00 GMT",
-                Source::FinancialTimes,
+                Source::Finance,
             ),
         ]);
         assert_eq!(merged.len(), 2);
@@ -1028,12 +1288,12 @@ mod tests {
     #[test]
     fn undated_headlines_sort_last_rather_than_first() {
         let merged = dedupe_and_sort(vec![
-            headline("undated", "https://e.com/a", "not a date", Source::CnbcTop),
+            headline("undated", "https://e.com/a", "not a date", Source::Top),
             headline(
                 "dated",
                 "https://e.com/b",
                 "Fri, 04 Sep 2026 13:00:00 GMT",
-                Source::CnbcTop,
+                Source::Top,
             ),
         ]);
         assert_eq!(merged[0].title, "dated");
@@ -1063,7 +1323,7 @@ mod tests {
             "Copper hits a record",
             "https://e.com/c",
             "Fri, 04 Sep 2026 13:00:00 GMT",
-            Source::CnbcTop,
+            Source::Top,
         )];
         // Select silver, which no headline mentions, but copper shares its
         // group.
@@ -1080,7 +1340,7 @@ mod tests {
             "Gold hits a record",
             "https://e.com/g",
             "Fri, 04 Sep 2026 13:00:00 GMT",
-            Source::CnbcTop,
+            Source::Top,
         )];
         a.board_selected = INSTRUMENTS.iter().position(|i| i.name == "Gold").unwrap();
         let (hits, label) = a.related_headlines();
@@ -1095,7 +1355,7 @@ mod tests {
             "An unrelated story",
             "https://e.com/u",
             "Fri, 04 Sep 2026 13:00:00 GMT",
-            Source::CnbcTop,
+            Source::Top,
         )];
         let (hits, label) = a.related_headlines();
         assert_eq!(hits.len(), 1);
@@ -1123,19 +1383,251 @@ mod tests {
     }
 
     #[test]
-    fn o_returns_the_url_of_the_selected_story_rather_than_opening_it() {
-        let mut a = app();
-        a.active_tab = Tab::News;
-        a.headlines = vec![headline(
-            "Story",
-            "https://e.com/s",
-            "Fri, 04 Sep 2026 13:00:00 GMT",
-            Source::CnbcTop,
-        )];
-        match a.handle_key(key('o')) {
-            Some(Action::OpenUrl(url)) => assert_eq!(url, "https://e.com/s"),
-            other => panic!("expected an OpenUrl action, got {other:?}"),
+    fn enter_on_the_news_tab_opens_the_reader_and_asks_for_the_story() {
+        let mut a = news_app();
+        match a.handle_key(code(KeyCode::Enter)) {
+            Some(Action::FetchStory(link)) => {
+                assert_eq!(link, "https://www.cnbc.com/2026/09/09/s.html")
+            }
+            other => panic!("expected a FetchStory action, got {other:?}"),
         }
+        assert_eq!(a.reader.as_ref().unwrap().headline.title, "Story");
+        assert!(matches!(a.story(), Some(Story::Loading)));
+    }
+
+    #[test]
+    fn o_opens_the_reader_from_the_board_rail_and_the_detail_view() {
+        let mut a = news_app();
+        a.active_tab = Tab::Board;
+        a.rail_all = true;
+        assert!(matches!(
+            a.handle_key(key('o')),
+            Some(Action::FetchStory(_))
+        ));
+        a.reader = None;
+        a.detail = Some(0);
+        assert!(
+            a.handle_key(code(KeyCode::Enter)).is_none(),
+            "already cached"
+        );
+        assert!(a.reader.is_some());
+    }
+
+    #[test]
+    fn a_cached_story_opens_without_a_fetch() {
+        let mut a = news_app();
+        a.stories
+            .insert(a.headlines[0].link.clone(), Story::Ready(article()));
+        assert!(a.handle_key(code(KeyCode::Enter)).is_none());
+        assert!(matches!(a.story(), Some(Story::Ready(_))));
+    }
+
+    #[test]
+    fn a_story_that_failed_is_fetched_again_when_reopened_or_on_r() {
+        let mut a = news_app();
+        let link = a.headlines[0].link.clone();
+        a.stories
+            .insert(link.clone(), Story::Failed("timed out".into()));
+        assert!(matches!(
+            a.handle_key(code(KeyCode::Enter)),
+            Some(Action::FetchStory(_))
+        ));
+        a.stories.insert(link, Story::Failed("timed out".into()));
+        assert!(matches!(
+            a.handle_key(key('r')),
+            Some(Action::FetchStory(_))
+        ));
+        assert!(matches!(a.story(), Some(Story::Loading)));
+        assert!(a.handle_key(key('r')).is_none(), "already loading");
+    }
+
+    #[test]
+    fn esc_closes_the_reader_and_leaves_the_view_beneath_it_alone() {
+        let mut a = news_app();
+        a.handle_key(code(KeyCode::Enter));
+        a.handle_key(code(KeyCode::Esc));
+        assert!(a.reader.is_none());
+        assert_eq!(a.active_tab, Tab::News);
+        assert!(!a.should_quit);
+    }
+
+    #[test]
+    fn the_reader_swallows_list_keys_and_scrolls_within_the_lines_the_ui_reported() {
+        let mut a = news_app();
+        a.handle_key(code(KeyCode::Enter));
+        a.reader_max_scroll.set(30);
+        a.viewport_rows.set(10);
+        a.handle_key(key('j'));
+        assert_eq!(a.reader.as_ref().unwrap().scroll, 1);
+        assert_eq!(a.news_scroll, 0, "j should not have moved the list");
+        a.handle_key(ctrl('d'));
+        assert_eq!(a.reader.as_ref().unwrap().scroll, 6);
+        a.handle_key(key('G'));
+        assert_eq!(a.reader.as_ref().unwrap().scroll, 30);
+        a.handle_key(key('g'));
+        assert_eq!(a.reader.as_ref().unwrap().scroll, 0);
+    }
+
+    #[test]
+    fn c_builds_a_card_from_the_feed_when_the_story_has_not_loaded() {
+        let mut a = news_app();
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => {
+                assert_eq!(card.title, "Story");
+                assert_eq!(card.kicker, "CNBC \u{b7} Economy");
+                assert!(card.points.is_empty());
+                assert_eq!(card.summary, "About Story.");
+                assert_eq!(card.domain, "cnbc.com");
+            }
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn c_uses_the_story_key_points_and_section_once_it_has_loaded() {
+        let mut a = news_app();
+        a.stories
+            .insert(a.headlines[0].link.clone(), Story::Ready(article()));
+        a.handle_key(code(KeyCode::Enter));
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => {
+                assert_eq!(card.points, vec!["One.", "Two."]);
+                assert_eq!(card.kicker, "CNBC \u{b7} Markets");
+            }
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    fn quote(last: f64, change: f64) -> Quote {
+        Quote {
+            last,
+            change,
+            change_pct: change / (last - change) * 100.0,
+            open: None,
+            high: None,
+            low: None,
+            prev_close: None,
+            year_high: None,
+            year_low: None,
+            market_status: None,
+        }
+    }
+
+    #[test]
+    fn the_card_carries_the_row_the_story_mentions_with_its_quote_and_closes() {
+        let mut a = news_app();
+        a.headlines[0] = headline(
+            "Gold hits a record as the dollar slips",
+            "https://www.cnbc.com/2026/09/09/g.html",
+            "Fri, 04 Sep 2026 13:00:00 GMT",
+            Source::Top,
+        );
+        let gold = INSTRUMENTS.iter().position(|i| i.name == "Gold").unwrap();
+        a.quotes[gold] = Some(quote(4465.70, 26.70));
+        a.history.insert(
+            (Range::OneMonth, INSTRUMENTS[gold].history.unwrap()),
+            vec![(1, 4400.0), (2, 4420.0), (3, 4465.7)],
+        );
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => {
+                let ticker = card.ticker.expect("a ticker");
+                assert_eq!(ticker.name, "Gold");
+                assert_eq!(ticker.level, "4,465.70");
+                assert!(ticker.up);
+                assert_eq!(ticker.closes, vec![4400.0, 4420.0, 4465.7]);
+            }
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    /// The story also mentions the dollar, but it was opened from the gold
+    /// row, so the card is tied to gold.
+    #[test]
+    fn the_focused_row_wins_when_the_story_mentions_it() {
+        let mut a = news_app();
+        a.headlines[0] = headline(
+            "Dollar slips as gold hits a record",
+            "https://www.cnbc.com/2026/09/09/g.html",
+            "Fri, 04 Sep 2026 13:00:00 GMT",
+            Source::Top,
+        );
+        for (n, i) in INSTRUMENTS.iter().enumerate() {
+            if i.name == "Gold" || i.name == "Dollar index" {
+                a.quotes[n] = Some(quote(100.0, -1.0));
+            }
+        }
+        a.active_tab = Tab::Board;
+        a.rail_all = true;
+        a.board_selected = INSTRUMENTS.iter().position(|i| i.name == "Gold").unwrap();
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => assert_eq!(card.ticker.unwrap().name, "Gold"),
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_story_that_mentions_no_row_or_a_row_without_a_quote_gets_no_ticker() {
+        let mut a = news_app();
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => assert!(card.ticker.is_none()),
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+        a.headlines[0] = headline(
+            "Gold hits a record",
+            "https://www.cnbc.com/2026/09/09/g.html",
+            "Fri, 04 Sep 2026 13:00:00 GMT",
+            Source::Top,
+        );
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => assert!(card.ticker.is_none(), "no quote yet"),
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_share_notice_stays_until_the_next_key() {
+        let mut a = news_app();
+        a.apply_shared(Ok("Copied".into()));
+        assert!(a.notice.is_some());
+        a.handle_key(key('j'));
+        assert!(a.notice.is_none());
+    }
+
+    #[test]
+    fn stories_whose_headlines_left_the_pool_are_dropped_on_refresh() {
+        let mut a = news_app();
+        a.stories.insert(
+            "https://www.cnbc.com/gone.html".into(),
+            Story::Ready(article()),
+        );
+        a.stories
+            .insert(a.headlines[0].link.clone(), Story::Ready(article()));
+        a.apply_fetch(Fetched {
+            request_id: a.request_id,
+            quotes: None,
+            news: Some(vec![Ok(a.headlines.clone())]),
+            history: None,
+            long_history: None,
+        });
+        assert_eq!(a.stories.len(), 1);
+        assert!(a
+            .stories
+            .contains_key("https://www.cnbc.com/2026/09/09/s.html"));
+    }
+
+    #[test]
+    fn a_fetched_story_lands_in_the_cache() {
+        let mut a = news_app();
+        a.apply_story(
+            "https://www.cnbc.com/2026/09/09/s.html".into(),
+            Ok(article()),
+        );
+        assert!(matches!(
+            a.stories.get("https://www.cnbc.com/2026/09/09/s.html"),
+            Some(Story::Ready(_))
+        ));
+        a.apply_story("x".into(), Err("boom".into()));
+        assert!(matches!(a.stories.get("x"), Some(Story::Failed(e)) if e == "boom"));
     }
 
     /// A shrinking news pool must not leave the cursor past the end.
@@ -1149,7 +1641,7 @@ mod tests {
                     "x",
                     &format!("https://e.com/{n}"),
                     "Fri, 04 Sep 2026 13:00:00 GMT",
-                    Source::CnbcTop,
+                    Source::Top,
                 )
             })
             .collect();

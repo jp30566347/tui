@@ -1,6 +1,7 @@
 mod action;
 mod api;
 mod app;
+mod card;
 mod catalog;
 mod config;
 mod tui;

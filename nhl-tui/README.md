@@ -1,19 +1,19 @@
 # nhl-tui
 
-[jp30566347.github.io/nhl-tui](https://jp30566347.github.io/nhl-tui)
+[jp30566347.github.io/tui/nhl-tui](https://jp30566347.github.io/tui/nhl-tui)
 
 NHL scores, standings, schedule, and leaders in your terminal.
 
-![A night's scores](docs/screenshot.png)
+![A night's scores](../docs/nhl-tui/screenshot.png)
 
 ## Installation
 
 ```sh
-curl -fsSL https://jp30566347.github.io/nhl-tui/install.sh | sh
+curl -fsSL https://jp30566347.github.io/tui/nhl-tui/install.sh | sh
 ```
 
 Drops a single binary in `~/.local/bin` after verifying its checksum. On Arch
-and Omarchy, `makepkg -si` in a clone builds a real package instead.
+and Omarchy, `makepkg -si` in this directory builds a real package instead.
 
 ### Homebrew (macOS)
 
@@ -23,7 +23,7 @@ brew install jp30566347/tap/nhl-tui
 
 ### Download binary
 
-Grab the latest binary for your platform from [GitHub Releases](https://github.com/jp30566347/nhl-tui/releases).
+Grab the latest binary for your platform from [GitHub Releases](https://github.com/jp30566347/tui/releases).
 
 | Platform | File |
 |----------|------|
@@ -36,9 +36,9 @@ Grab the latest binary for your platform from [GitHub Releases](https://github.c
 ### Build from source
 
 ```sh
-git clone https://github.com/jp30566347/nhl-tui.git
-cd nhl-tui
-cargo build --release
+git clone https://github.com/jp30566347/tui.git
+cd tui
+cargo build --release -p nhl-tui
 ```
 
 ## Usage
