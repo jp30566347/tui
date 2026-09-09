@@ -17,8 +17,8 @@ use crate::api::article::{Article, Block};
 use crate::api::models::{Quote, Series};
 use crate::api::rss::{Headline, Source};
 use crate::api::MarketClient;
-use crate::card::{self, Card};
-use crate::catalog::{self, Group, Instrument, INSTRUMENTS};
+use crate::card::{self, Card, Ticker};
+use crate::catalog::{self, format_percent, Group, Instrument, INSTRUMENTS};
 use tui_common::layout::cycle;
 
 /// How long news stays fresh before a tick will refetch it.
@@ -484,15 +484,10 @@ impl App {
         &'a self,
         instruments: impl Iterator<Item = &'a Instrument>,
     ) -> Vec<&'a Headline> {
-        let needles: Vec<String> = instruments
-            .flat_map(|i| {
-                std::iter::once(i.name.to_lowercase())
-                    .chain(i.aliases.iter().map(|a| a.to_string()))
-            })
-            .collect();
+        let instruments: Vec<&Instrument> = instruments.collect();
         self.headlines
             .iter()
-            .filter(|h| needles.iter().any(|n| contains_word(&h.haystack, n)))
+            .filter(|h| instruments.iter().any(|i| mentions(&h.haystack, i)))
             .collect()
     }
 
@@ -748,7 +743,34 @@ impl App {
             points,
             summary,
             domain: card::domain(&headline.link),
+            ticker: self.ticker_for(headline),
         }
+    }
+
+    /// The board row a story mentions, with its quote and month of closes,
+    /// for the card's ticker strip. The focused instrument wins when the
+    /// story mentions it, so a story opened from a row is tied to that row;
+    /// otherwise the first mentioned instrument in board order. A story that
+    /// mentions nothing on the board, or a row without a quote, gets none.
+    fn ticker_for(&self, headline: &Headline) -> Option<Ticker> {
+        let instrument = std::iter::once(self.focused())
+            .chain(INSTRUMENTS.iter())
+            .find(|i| mentions(&headline.haystack, i))?;
+        let n = INSTRUMENTS.iter().position(|i| i.cnbc == instrument.cnbc)?;
+        let quote = self.quotes[n].as_ref()?;
+        let closes = instrument
+            .history
+            .and_then(|key| self.history.get(&(Range::OneMonth, key)))
+            .map(|series| series.iter().map(|(_, v)| *v).collect())
+            .unwrap_or_default();
+        Some(Ticker {
+            name: instrument.name.to_string(),
+            level: instrument.level(quote.last),
+            change: instrument.change(quote.change),
+            percent: format_percent(quote.change_pct),
+            up: quote.change >= 0.0,
+            closes,
+        })
     }
 
     pub fn apply_shared(&mut self, result: Result<String, String>) {
@@ -894,6 +916,15 @@ fn dedupe_and_sort(mut headlines: Vec<Headline>) -> Vec<Headline> {
 /// recognised as one.
 fn canonical_link(link: &str) -> String {
     link.split(['?', '#']).next().unwrap_or(link).to_lowercase()
+}
+
+/// Whether a headline's haystack mentions an instrument by name or alias.
+fn mentions(haystack: &str, instrument: &Instrument) -> bool {
+    contains_word(haystack, &instrument.name.to_lowercase())
+        || instrument
+            .aliases
+            .iter()
+            .any(|alias| contains_word(haystack, alias))
 }
 
 /// Substring match that will not fire inside a longer word.
@@ -1463,6 +1494,92 @@ mod tests {
                 assert_eq!(card.points, vec!["One.", "Two."]);
                 assert_eq!(card.kicker, "CNBC \u{b7} Markets");
             }
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    fn quote(last: f64, change: f64) -> Quote {
+        Quote {
+            last,
+            change,
+            change_pct: change / (last - change) * 100.0,
+            open: None,
+            high: None,
+            low: None,
+            prev_close: None,
+            year_high: None,
+            year_low: None,
+            market_status: None,
+        }
+    }
+
+    #[test]
+    fn the_card_carries_the_row_the_story_mentions_with_its_quote_and_closes() {
+        let mut a = news_app();
+        a.headlines[0] = headline(
+            "Gold hits a record as the dollar slips",
+            "https://www.cnbc.com/2026/09/09/g.html",
+            "Fri, 04 Sep 2026 13:00:00 GMT",
+            Source::Top,
+        );
+        let gold = INSTRUMENTS.iter().position(|i| i.name == "Gold").unwrap();
+        a.quotes[gold] = Some(quote(4465.70, 26.70));
+        a.history.insert(
+            (Range::OneMonth, INSTRUMENTS[gold].history.unwrap()),
+            vec![(1, 4400.0), (2, 4420.0), (3, 4465.7)],
+        );
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => {
+                let ticker = card.ticker.expect("a ticker");
+                assert_eq!(ticker.name, "Gold");
+                assert_eq!(ticker.level, "4,465.70");
+                assert!(ticker.up);
+                assert_eq!(ticker.closes, vec![4400.0, 4420.0, 4465.7]);
+            }
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    /// The story also mentions the dollar, but it was opened from the gold
+    /// row, so the card is tied to gold.
+    #[test]
+    fn the_focused_row_wins_when_the_story_mentions_it() {
+        let mut a = news_app();
+        a.headlines[0] = headline(
+            "Dollar slips as gold hits a record",
+            "https://www.cnbc.com/2026/09/09/g.html",
+            "Fri, 04 Sep 2026 13:00:00 GMT",
+            Source::Top,
+        );
+        for (n, i) in INSTRUMENTS.iter().enumerate() {
+            if i.name == "Gold" || i.name == "Dollar index" {
+                a.quotes[n] = Some(quote(100.0, -1.0));
+            }
+        }
+        a.active_tab = Tab::Board;
+        a.rail_all = true;
+        a.board_selected = INSTRUMENTS.iter().position(|i| i.name == "Gold").unwrap();
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => assert_eq!(card.ticker.unwrap().name, "Gold"),
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_story_that_mentions_no_row_or_a_row_without_a_quote_gets_no_ticker() {
+        let mut a = news_app();
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => assert!(card.ticker.is_none()),
+            other => panic!("expected a Share action, got {other:?}"),
+        }
+        a.headlines[0] = headline(
+            "Gold hits a record",
+            "https://www.cnbc.com/2026/09/09/g.html",
+            "Fri, 04 Sep 2026 13:00:00 GMT",
+            Source::Top,
+        );
+        match a.handle_key(key('c')) {
+            Some(Action::Share(card)) => assert!(card.ticker.is_none(), "no quote yet"),
             other => panic!("expected a Share action, got {other:?}"),
         }
     }

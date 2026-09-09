@@ -66,8 +66,12 @@ The clipboard holds the image for as long as macro-tui runs; the file stays.
 
 ![A share card](docs/card.png)
 
-The card uses the story's own key points once it has been opened, and the
-feed's one-line summary before that.
+The card is drawn as a terminal window running macro-tui: the tab bar in the
+frame, the headline, the story's own key points (or the feed's one-line
+summary before the story has been opened), and, when the story mentions one
+of the board's instruments, that row's price, move and month of closes as a
+ticker strip. A story opened from a row is tied to that row when it mentions
+it; otherwise the first instrument it mentions, in board order.
 
 ## Where the data comes from
 
@@ -123,10 +127,11 @@ takes the story's text from that tree rather than from the markup around it,
 which changes with every redesign. The live checks above include one that
 opens the newest story in every feed and fails if the body comes back empty.
 
-**The share card's fonts are compiled in.** `assets/fonts/` holds Inter,
-subset to Latin and with its kerning folded into a legacy `kern` table, which
-is the one the rasteriser reads. They are under the SIL Open Font License;
-see the licence file beside them.
+**The share card's font is compiled in.** `assets/fonts/` holds JetBrains
+Mono, regular and bold, subset to Latin plus the box-drawing, block and
+geometric-shape ranges the card draws with. It is under the SIL Open Font
+License; see the licence file beside it. The renderer sizes text by em, so a
+size in the code is the cell height it would be in a terminal.
 
 ## License
 

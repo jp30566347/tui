@@ -1,12 +1,13 @@
 //! The share card: a story rendered as an image, for pasting into a post.
 //!
-//! A timeline shows an attached image at 16:9, so the card is 1600 by 900 and
-//! its layout is fixed: a section kicker and the date across the top, the
-//! headline as large as it can be while still fitting on three lines, CNBC's
-//! key points or the feed's summary beneath, and the publisher's domain in
-//! the footer beside the app's name. Everything is drawn here, with fonts
-//! compiled into the binary, so the card looks the same on every machine and
-//! needs nothing installed.
+//! The card is drawn as a terminal window running macro-tui, so it is
+//! unmistakably from the app: a box-drawing frame with the tab bar in its top
+//! edge, a monospace face throughout, the headline in bold, CNBC's key points
+//! as a list, and, when the story mentions one of the board's instruments,
+//! that row's price, move and month of closes as a ticker strip. A timeline
+//! shows an attached image at 16:9, so it is 1600 by 900. Everything is drawn
+//! here with fonts compiled into the binary, so the card looks the same on
+//! every machine and needs nothing installed.
 
 use std::borrow::Cow;
 use std::io::Cursor;
@@ -18,33 +19,61 @@ use image::{ImageFormat, Rgba, RgbaImage};
 
 const WIDTH: u32 = 1600;
 const HEIGHT: u32 = 900;
-const MARGIN: f32 = 96.0;
-const CONTENT_WIDTH: f32 = WIDTH as f32 - 2.0 * MARGIN;
-/// A headline longer than this is shrunk, then cut, rather than pushed into
-/// the summary.
+/// Where the window frame sits, in from the image edge.
+const FRAME: f32 = 40.0;
+/// How far text sits in from the frame.
+const GUTTER: f32 = 40.0;
+const CONTENT_LEFT: f32 = FRAME + GUTTER;
+const CONTENT_RIGHT: f32 = WIDTH as f32 - FRAME - GUTTER;
+const CONTENT_WIDTH: f32 = CONTENT_RIGHT - CONTENT_LEFT;
+const BORDER_WIDTH: u32 = 2;
+
+/// The terminal's text size and its line pitch.
+const BASE: f32 = 32.0;
+const ROW: f32 = 48.0;
+/// A headline longer than three lines at the smallest size is cut.
 const HEADLINE_LINES: usize = 3;
-const HEADLINE_SIZES: [f32; 4] = [68.0, 60.0, 52.0, 46.0];
-const POINT_SIZE: f32 = 33.0;
-const SUMMARY_SIZE: f32 = 34.0;
-const META_SIZE: f32 = 28.0;
+const HEADLINE_SIZES: [f32; 3] = [52.0, 46.0, 40.0];
 const MAX_POINTS: usize = 4;
+/// A point longer than this is cut with an ellipsis rather than allowed to
+/// crowd out the ones after it.
+const POINT_LINES: usize = 3;
+/// Bars in the ticker strip: width, gap and tallest bar.
+const BAR_WIDTH: f32 = 10.0;
+const BAR_GAP: f32 = 4.0;
+const BAR_HEIGHT: f32 = 30.0;
+const BAR_MAX: usize = 24;
 
-// Subset to Latin, with the kerning folded into a legacy `kern` table, which
-// is the one ab_glyph reads. See assets/fonts/LICENSE.txt.
-const REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
-const MEDIUM: &[u8] = include_bytes!("../assets/fonts/Inter-Medium.ttf");
-const DISPLAY: &[u8] = include_bytes!("../assets/fonts/InterDisplay-SemiBold.ttf");
+// Subset to Latin plus the box-drawing and block ranges. See
+// assets/fonts/LICENSE.txt.
+const REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+const BOLD: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf");
 
-const BACKGROUND: Rgba<u8> = Rgba([15, 20, 26, 255]);
-const TEXT: Rgba<u8> = Rgba([243, 245, 247, 255]);
-const BODY: Rgba<u8> = Rgba([205, 214, 223, 255]);
-const MUTED: Rgba<u8> = Rgba([139, 152, 165, 255]);
-const ACCENT: Rgba<u8> = Rgba([56, 189, 248, 255]);
-const RULE: Rgba<u8> = Rgba([36, 46, 58, 255]);
+const BACKGROUND: Rgba<u8> = Rgba([13, 17, 23, 255]);
+const TEXT: Rgba<u8> = Rgba([230, 237, 243, 255]);
+const BODY: Rgba<u8> = Rgba([201, 209, 217, 255]);
+const MUTED: Rgba<u8> = Rgba([125, 133, 144, 255]);
+const BORDER: Rgba<u8> = Rgba([72, 79, 88, 255]);
+const CYAN: Rgba<u8> = Rgba([121, 192, 255, 255]);
+const GREEN: Rgba<u8> = Rgba([63, 185, 80, 255]);
+const RED: Rgba<u8> = Rgba([248, 81, 73, 255]);
+const SELECTED: Rgba<u8> = Rgba([48, 54, 61, 255]);
+
+/// The instrument a story is about, as it reads on the board.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ticker {
+    pub name: String,
+    pub level: String,
+    pub change: String,
+    pub percent: String,
+    pub up: bool,
+    /// A month of daily closes, oldest first. Empty when there is no history.
+    pub closes: Vec<f64>,
+}
 
 /// Everything the card shows. Built from app state by the key handler, so
 /// rendering needs nothing but this.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Card {
     pub title: String,
     /// Publisher and section, such as "CNBC · Economy".
@@ -56,6 +85,8 @@ pub struct Card {
     pub summary: String,
     /// The story's host, without a `www.` prefix.
     pub domain: String,
+    /// The board row the story mentions, if any.
+    pub ticker: Option<Ticker>,
 }
 
 /// Renders the card, writes it beside the user's pictures, and puts it on the
@@ -77,136 +108,250 @@ pub fn share(card: &Card) -> Result<String, String> {
 /// The card as an RGBA bitmap.
 pub fn render(card: &Card) -> RgbaImage {
     let regular = FontRef::try_from_slice(REGULAR).expect("embedded font");
-    let medium = FontRef::try_from_slice(MEDIUM).expect("embedded font");
-    let display = FontRef::try_from_slice(DISPLAY).expect("embedded font");
-
+    let bold = FontRef::try_from_slice(BOLD).expect("embedded font");
     let mut img = RgbaImage::from_pixel(WIDTH, HEIGHT, BACKGROUND);
-    fill(&mut img, 0, 0, WIDTH, 6, ACCENT);
 
-    // Kicker on the left, date on the right, sharing a baseline.
-    let mut y = MARGIN + META_SIZE;
+    let top = FRAME;
+    let bottom = HEIGHT as f32 - FRAME;
+    frame(&mut img, FRAME, top, WIDTH as f32 - FRAME, bottom);
+
+    // The window title and tab bar sit in the top edge, the way the app draws
+    // its own, with the News tab selected.
+    let mut x = FRAME + 24.0;
+    x = label(&mut img, &bold, x, top, " macro-tui ", TEXT, None);
+    x = label(&mut img, &regular, x + 12.0, top, " 1 Board ", MUTED, None);
+    label(
+        &mut img,
+        &bold,
+        x + 8.0,
+        top,
+        " 2 News ",
+        TEXT,
+        Some(SELECTED),
+    );
+
+    // Kicker on the left, date on the right.
+    let mut y = top + ROW * 1.9;
     let (publisher, section) = card
         .kicker
         .split_once(" \u{b7} ")
         .unwrap_or((card.kicker.as_str(), ""));
-    let mut x = MARGIN;
-    x += draw(&mut img, &medium, META_SIZE, x, y, publisher, ACCENT);
+    let mut x = CONTENT_LEFT;
+    x += draw(&mut img, &bold, BASE, x, y, publisher, CYAN);
     if !section.is_empty() {
         draw(
             &mut img,
             &regular,
-            META_SIZE,
+            BASE,
             x,
             y,
-            &format!("  \u{b7}  {section}"),
+            &format!(" \u{b7} {section}"),
             MUTED,
         );
     }
     if let Some(date) = card.published {
-        let label = date.with_timezone(&Local).format("%-d %b %Y").to_string();
-        let w = measure(&regular, META_SIZE, &label);
-        draw(
-            &mut img,
-            &regular,
-            META_SIZE,
-            WIDTH as f32 - MARGIN - w,
-            y,
-            &label,
-            MUTED,
-        );
+        let text = date.with_timezone(&Local).format("%-d %b %Y").to_string();
+        let w = measure(&regular, BASE, &text);
+        draw(&mut img, &regular, BASE, CONTENT_RIGHT - w, y, &text, MUTED);
     }
 
-    // The headline, at the largest size that fits.
-    let (size, lines) = fit_headline(&display, &card.title);
-    y += 64.0;
-    let line_height = size * 1.14;
+    // The headline, bold, at the largest size that fits.
+    let (size, lines) = fit_headline(&bold, &card.title);
+    y += ROW * 0.6;
     for line in &lines {
-        y += size;
-        draw(&mut img, &display, size, MARGIN, y, line, TEXT);
-        y += line_height - size;
+        y += size * 1.15;
+        draw(&mut img, &bold, size, CONTENT_LEFT, y, line, TEXT);
     }
 
-    // The footer's top edge is where the body has to stop.
-    let footer_top = HEIGHT as f32 - MARGIN - META_SIZE - 24.0;
-    y += 40.0;
-
+    // The ticker strip is anchored above the bottom edge; whatever is
+    // between the headline and it is for the points.
+    let strip_top = match card.ticker {
+        Some(_) => bottom - ROW * 2.7,
+        None => bottom - ROW * 0.9,
+    };
+    // Clearance between the last line and whatever comes after it.
+    let clearance = ROW * 0.4;
+    y += ROW * 0.4;
+    let indent = char_width(BASE) * 2.0;
     if card.points.is_empty() {
-        let line_height = SUMMARY_SIZE * 1.4;
-        for line in wrap(&regular, SUMMARY_SIZE, &card.summary, CONTENT_WIDTH)
+        for line in wrap(&regular, BASE, &card.summary, CONTENT_WIDTH)
             .into_iter()
             .take(4)
         {
-            if y + line_height > footer_top {
+            if y + ROW + clearance > strip_top {
                 break;
             }
-            y += SUMMARY_SIZE;
-            draw(&mut img, &regular, SUMMARY_SIZE, MARGIN, y, &line, BODY);
-            y += line_height - SUMMARY_SIZE;
+            y += ROW;
+            draw(&mut img, &regular, BASE, CONTENT_LEFT, y, &line, BODY);
         }
     } else {
-        let indent = 40.0;
-        let line_height = POINT_SIZE * 1.4;
         for text in card.points.iter().take(MAX_POINTS) {
-            let lines: Vec<String> = wrap(&regular, POINT_SIZE, text, CONTENT_WIDTH - indent)
-                .into_iter()
-                .take(2)
-                .collect();
-            let needed = lines.len() as f32 * line_height;
-            if y + needed > footer_top {
+            let width = CONTENT_WIDTH - indent;
+            let lines = cut(
+                &regular,
+                BASE,
+                wrap(&regular, BASE, text, width),
+                width,
+                POINT_LINES,
+            );
+            if y + ROW * lines.len() as f32 + clearance > strip_top {
                 break;
             }
-            // A dot on the first line's x-height, then a hanging indent.
-            dot(&mut img, MARGIN + 8.0, y + POINT_SIZE * 0.62, 5.0, ACCENT);
-            for line in &lines {
-                y += POINT_SIZE;
+            for (n, line) in lines.iter().enumerate() {
+                y += ROW;
+                if n == 0 {
+                    draw(&mut img, &regular, BASE, CONTENT_LEFT, y, "\u{25b8}", CYAN);
+                }
                 draw(
                     &mut img,
                     &regular,
-                    POINT_SIZE,
-                    MARGIN + indent,
+                    BASE,
+                    CONTENT_LEFT + indent,
                     y,
                     line,
                     BODY,
                 );
-                y += line_height - POINT_SIZE;
             }
-            y += 14.0;
+            y += ROW * 0.1;
         }
     }
 
-    // Footer: a hairline, the domain, and the app's name.
-    let rule_y = (HEIGHT as f32 - MARGIN - META_SIZE - 8.0) as u32;
-    fill(
-        &mut img,
-        MARGIN as u32,
-        rule_y,
-        CONTENT_WIDTH as u32,
-        1,
-        RULE,
-    );
-    let baseline = HEIGHT as f32 - MARGIN + 8.0;
-    draw(
-        &mut img,
-        &medium,
-        META_SIZE - 2.0,
-        MARGIN,
-        baseline,
-        &card.domain,
-        MUTED,
-    );
-    let brand = "macro-tui";
-    let w = measure(&regular, META_SIZE - 2.0, brand);
-    draw(
+    if let Some(ticker) = &card.ticker {
+        draw_ticker(&mut img, &regular, &bold, ticker, strip_top);
+    }
+
+    // The bottom edge carries the source and the app's name, as the app's
+    // own panels carry their hints.
+    label(
         &mut img,
         &regular,
-        META_SIZE - 2.0,
-        WIDTH as f32 - MARGIN - w,
-        baseline,
+        FRAME + 24.0,
+        bottom,
+        &format!(" {} ", card.domain),
+        MUTED,
+        None,
+    );
+    let brand = " macro-tui ";
+    let w = measure(&regular, BASE, brand);
+    label(
+        &mut img,
+        &regular,
+        WIDTH as f32 - FRAME - 24.0 - w,
+        bottom,
         brand,
         MUTED,
+        None,
     );
 
     img
+}
+
+/// The instrument's row: a rule carrying its name, then the level, the move
+/// and a month of closes as bars, the way the board shows it.
+fn draw_ticker(img: &mut RgbaImage, regular: &FontRef, bold: &FontRef, ticker: &Ticker, top: f32) {
+    let rule_y = top + ROW * 0.5;
+    fill(
+        img,
+        CONTENT_LEFT as u32,
+        rule_y as u32,
+        CONTENT_WIDTH as u32,
+        BORDER_WIDTH,
+        BORDER,
+    );
+    label(
+        img,
+        regular,
+        CONTENT_LEFT + char_width(BASE),
+        rule_y,
+        &format!(" {} ", ticker.name),
+        CYAN,
+        None,
+    );
+
+    let y = rule_y + ROW * 1.3;
+    let colour = if ticker.up { GREEN } else { RED };
+    let mut x = CONTENT_LEFT;
+    x += draw(img, bold, BASE, x, y, &ticker.level, TEXT);
+    x += char_width(BASE) * 3.0;
+    x += draw(img, regular, BASE, x, y, &ticker.change, colour);
+    x += char_width(BASE) * 2.0;
+    x += draw(img, regular, BASE, x, y, &ticker.percent, colour);
+    x += char_width(BASE) * 3.0;
+
+    let closes = &ticker.closes[ticker.closes.len().saturating_sub(BAR_MAX)..];
+    if !closes.is_empty() {
+        let low = closes.iter().cloned().fold(f64::MAX, f64::min);
+        let high = closes.iter().cloned().fold(f64::MIN, f64::max);
+        let span = high - low;
+        for value in closes {
+            // A flat month has no shape to show; half height says so.
+            let level = if span > 0.0 {
+                ((value - low) / span) as f32
+            } else {
+                0.5
+            };
+            let h = (3.0 + level * (BAR_HEIGHT - 3.0)).round();
+            fill(
+                img,
+                x as u32,
+                (y - h) as u32,
+                BAR_WIDTH as u32,
+                h as u32,
+                colour,
+            );
+            x += BAR_WIDTH + BAR_GAP;
+        }
+        x += char_width(BASE) * 2.0;
+        draw(img, regular, BASE, x, y, "1M", MUTED);
+    }
+}
+
+/// The window frame: two-pixel edges, with the corners squared off.
+fn frame(img: &mut RgbaImage, left: f32, top: f32, right: f32, bottom: f32) {
+    let (l, t, r, b) = (left as u32, top as u32, right as u32, bottom as u32);
+    fill(img, l, t, r - l, BORDER_WIDTH, BORDER);
+    fill(img, l, b, r - l + BORDER_WIDTH, BORDER_WIDTH, BORDER);
+    fill(img, l, t, BORDER_WIDTH, b - t, BORDER);
+    fill(img, r, t, BORDER_WIDTH, b - t, BORDER);
+}
+
+/// Text sitting in a frame edge, the way a panel title does: the background
+/// is painted behind it so the line breaks around the words. Returns the x
+/// past the label.
+fn label(
+    img: &mut RgbaImage,
+    font: &FontRef,
+    x: f32,
+    line_y: f32,
+    text: &str,
+    colour: Rgba<u8>,
+    background: Option<Rgba<u8>>,
+) -> f32 {
+    let w = measure(font, BASE, text);
+    let h = ROW * 0.9;
+    fill(
+        img,
+        x as u32,
+        (line_y - h / 2.0) as u32,
+        w.ceil() as u32,
+        h as u32,
+        background.unwrap_or(BACKGROUND),
+    );
+    // A baseline that centres the x-height on the line.
+    draw(img, font, BASE, x, line_y + BASE * 0.36, text, colour);
+    x + w
+}
+
+/// The advance of one cell in the monospace face.
+fn char_width(size: f32) -> f32 {
+    size * 0.6
+}
+
+/// ab_glyph scales by line height rather than by em, so a size given in
+/// pixels per em has to go through the font's own metrics first.
+fn scale(font: &FontRef, size: f32) -> PxScale {
+    let per_em = font.units_per_em().expect("font has units per em");
+    PxScale::from(size * font.height_unscaled() / per_em)
 }
 
 /// The card as PNG bytes.
@@ -228,21 +373,29 @@ fn fit_headline(font: &FontRef, title: &str) -> (f32, Vec<String>) {
         }
     }
     let size = HEADLINE_SIZES[HEADLINE_SIZES.len() - 1];
-    let mut lines = wrap(font, size, title, CONTENT_WIDTH);
-    lines.truncate(HEADLINE_LINES);
+    let lines = wrap(font, size, title, CONTENT_WIDTH);
+    (size, cut(font, size, lines, CONTENT_WIDTH, HEADLINE_LINES))
+}
+
+/// Keeps the first `max` lines, ending the last with an ellipsis when
+/// anything was dropped. Trailing words go before the ellipsis does.
+fn cut(font: &FontRef, size: f32, mut lines: Vec<String>, width: f32, max: usize) -> Vec<String> {
+    if lines.len() <= max {
+        return lines;
+    }
+    lines.truncate(max);
     if let Some(last) = lines.last_mut() {
-        // Make room for the ellipsis by dropping trailing words until it fits.
         loop {
             let candidate = format!("{}\u{2026}", last.trim_end());
-            if measure(font, size, &candidate) <= CONTENT_WIDTH || !last.contains(' ') {
+            if measure(font, size, &candidate) <= width || !last.contains(' ') {
                 *last = candidate;
                 break;
             }
-            let cut = last.rfind(' ').unwrap_or(0);
-            last.truncate(cut);
+            let at = last.rfind(' ').unwrap_or(0);
+            last.truncate(at);
         }
     }
-    (size, lines)
+    lines
 }
 
 /// Greedy word wrap by measured width. A single word wider than the line is
@@ -296,7 +449,7 @@ fn draw(
     text: &str,
     colour: Rgba<u8>,
 ) -> f32 {
-    let scale = PxScale::from(size);
+    let scale = scale(font, size);
     layout(font, size, text, |id, at| {
         let glyph = id.with_scale_and_position(scale, point(x + at, y));
         if let Some(outline) = font.outline_glyph(glyph) {
@@ -310,10 +463,10 @@ fn draw(
     })
 }
 
-/// Positions each glyph with kerning applied, calling `place` with its id and
-/// x offset, and returns the total advance.
+/// Positions each glyph, calling `place` with its id and x offset, and
+/// returns the total advance.
 fn layout(font: &FontRef, size: f32, text: &str, mut place: impl FnMut(GlyphId, f32)) -> f32 {
-    let scaled = font.as_scaled(PxScale::from(size));
+    let scaled = font.as_scaled(scale(font, size));
     let mut x = 0.0;
     let mut previous: Option<GlyphId> = None;
     for c in text.chars() {
@@ -347,20 +500,6 @@ fn fill(img: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, colour: Rgba<u8>) {
     for py in y..(y + h).min(img.height()) {
         for px in x..(x + w).min(img.width()) {
             img.put_pixel(px, py, colour);
-        }
-    }
-}
-
-/// An anti-aliased filled circle.
-fn dot(img: &mut RgbaImage, cx: f32, cy: f32, r: f32, colour: Rgba<u8>) {
-    let (x0, x1) = ((cx - r - 1.0) as i32, (cx + r + 1.0) as i32);
-    let (y0, y1) = ((cy - r - 1.0) as i32, (cy + r + 1.0) as i32);
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            let dx = x as f32 + 0.5 - cx;
-            let dy = y as f32 + 0.5 - cy;
-            let coverage = (r - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
-            blend(img, x, y, colour, coverage);
         }
     }
 }
@@ -446,24 +585,43 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    fn display() -> FontRef<'static> {
-        FontRef::try_from_slice(DISPLAY).unwrap()
+    fn bold() -> FontRef<'static> {
+        FontRef::try_from_slice(BOLD).unwrap()
     }
 
     fn card() -> Card {
         Card {
-            title: "U.S. payrolls rose 162,000 in August, much more than expected".into(),
-            kicker: "CNBC \u{b7} Economy".into(),
-            published: DateTime::parse_from_rfc3339("2026-09-04T13:52:53+00:00")
+            title: "Bessent bond plan details to be revealed as Treasury secretary warns FX \
+                    traders he's 'the house now'"
+                .into(),
+            kicker: "CNBC \u{b7} Markets".into(),
+            published: DateTime::parse_from_rfc3339("2026-09-09T08:25:00+00:00")
                 .ok()
                 .map(|d| d.with_timezone(&Utc)),
             points: vec![
-                "Nonfarm payrolls were expected to increase by 53,000.".into(),
-                "The unemployment rate held at 4.3%, in line with the estimate.".into(),
-                "Average hourly earnings rose 0.3% for the month and 3.7% from a year ago, both ahead of forecasts from economists surveyed by Dow Jones.".into(),
+                "The Treasury Department on Wednesday will announce the size of a buyback \
+                 operation it is slated to begin on long-dated U.S. debt."
+                    .into(),
+                "While a prior announcement indicated the total would be at least $4 billion, \
+                 analysts see the potential for the number to climb significantly higher."
+                    .into(),
+                "\"I'm the house now,\" Treasury Secretary Scott Bessent warned currency \
+                 traders this week."
+                    .into(),
             ],
             summary: String::new(),
             domain: "cnbc.com".into(),
+            ticker: Some(Ticker {
+                name: "US 10-year".into(),
+                level: "4.814%".into(),
+                change: "+1.0 bp".into(),
+                percent: "+0.21%".into(),
+                up: true,
+                closes: vec![
+                    4.62, 4.65, 4.71, 4.70, 4.74, 4.78, 4.77, 4.79, 4.75, 4.76, 4.80, 4.83, 4.79,
+                    4.78, 4.81, 4.85, 4.84, 4.82, 4.80, 4.79, 4.81, 4.814,
+                ],
+            }),
         }
     }
 
@@ -484,18 +642,65 @@ mod tests {
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
     }
 
+    /// The frame is drawn on every edge, in the border colour.
     #[test]
-    fn a_card_with_no_points_falls_back_to_its_summary_without_panicking() {
+    fn the_window_frame_runs_round_all_four_edges() {
+        let img = render(&card());
+        let mid_x = WIDTH / 2;
+        let mid_y = HEIGHT / 2;
+        assert_eq!(*img.get_pixel(mid_x, FRAME as u32), BORDER, "top edge");
+        assert_eq!(
+            *img.get_pixel(mid_x, HEIGHT - FRAME as u32),
+            BORDER,
+            "bottom edge"
+        );
+        assert_eq!(*img.get_pixel(FRAME as u32, mid_y), BORDER, "left edge");
+        assert_eq!(
+            *img.get_pixel(WIDTH - FRAME as u32, mid_y),
+            BORDER,
+            "right edge"
+        );
+    }
+
+    /// A rising instrument paints green bars; a falling one, red.
+    #[test]
+    fn the_ticker_strip_is_coloured_by_the_direction_of_the_move() {
+        let up = render(&card());
+        assert!(up.pixels().any(|p| *p == GREEN));
+        assert!(!up.pixels().any(|p| *p == RED));
+
         let mut c = card();
+        c.ticker.as_mut().unwrap().up = false;
+        let down = render(&c);
+        assert!(down.pixels().any(|p| *p == RED));
+        assert!(!down.pixels().any(|p| *p == GREEN));
+    }
+
+    #[test]
+    fn a_card_without_a_ticker_or_points_still_renders() {
+        let mut c = card();
+        c.ticker = None;
         c.points.clear();
         c.summary = "Nonfarm payrolls were expected to increase by 53,000.".into();
         let img = render(&c);
         assert_eq!(img.width(), WIDTH);
+        assert!(!img.pixels().any(|p| *p == GREEN || *p == RED));
+    }
+
+    #[test]
+    fn a_ticker_with_no_history_draws_no_bars() {
+        let mut c = card();
+        c.ticker.as_mut().unwrap().closes.clear();
+        let img = render(&c);
+        // The move is still green, but far fewer pixels of it without bars.
+        let green = img.pixels().filter(|p| **p == GREEN).count();
+        let with_bars = render(&card()).pixels().filter(|p| **p == GREEN).count();
+        assert!(green > 0 && green < with_bars);
     }
 
     #[test]
     fn a_short_headline_gets_the_largest_size() {
-        let (size, lines) = fit_headline(&display(), "Oil tops $100");
+        let (size, lines) = fit_headline(&bold(), "Oil tops $100");
         assert_eq!(size, HEADLINE_SIZES[0]);
         assert_eq!(lines.len(), 1);
     }
@@ -505,7 +710,7 @@ mod tests {
         let title = "Treasury Secretary Bessent says the department will announce the size of \
                      its buyback operation on Wednesday morning as bond markets steady after \
                      a week of selling that pushed the 30-year yield past 5%";
-        let (size, lines) = fit_headline(&display(), title);
+        let (size, lines) = fit_headline(&bold(), title);
         assert!(size < HEADLINE_SIZES[0]);
         assert!(lines.len() <= HEADLINE_LINES);
     }
@@ -513,40 +718,63 @@ mod tests {
     #[test]
     fn an_endless_headline_is_cut_with_an_ellipsis() {
         let title = "word ".repeat(120);
-        let (_, lines) = fit_headline(&display(), &title);
+        let (_, lines) = fit_headline(&bold(), &title);
         assert_eq!(lines.len(), HEADLINE_LINES);
         assert!(lines[2].ends_with('\u{2026}'));
     }
 
     #[test]
+    fn a_point_that_runs_long_is_cut_with_an_ellipsis_not_silently() {
+        let font = FontRef::try_from_slice(REGULAR).unwrap();
+        let text = "word ".repeat(80);
+        let lines = cut(
+            &font,
+            BASE,
+            wrap(&font, BASE, &text, 600.0),
+            600.0,
+            POINT_LINES,
+        );
+        assert_eq!(lines.len(), POINT_LINES);
+        assert!(lines[POINT_LINES - 1].ends_with('\u{2026}'));
+        assert!(measure(&font, BASE, &lines[POINT_LINES - 1]) <= 600.0);
+        let short = cut(&font, BASE, vec!["fits".into()], 600.0, POINT_LINES);
+        assert_eq!(short, vec!["fits"]);
+    }
+
+    #[test]
     fn wrapping_keeps_every_line_inside_the_width() {
-        let font = display();
+        let font = bold();
         let text = "The quick brown fox jumps over the lazy dog, again and again and again";
-        for line in wrap(&font, 60.0, text, 500.0) {
-            assert!(measure(&font, 60.0, &line) <= 500.0, "{line}");
+        for line in wrap(&font, 40.0, text, 500.0) {
+            assert!(measure(&font, 40.0, &line) <= 500.0, "{line}");
         }
     }
 
     #[test]
     fn a_word_wider_than_the_line_is_broken_rather_than_overflowing() {
-        let font = display();
+        let font = bold();
         let lines = wrap(
             &font,
-            60.0,
+            40.0,
             "Donaudampfschifffahrtsgesellschaftskapitän",
             300.0,
         );
         assert!(lines.len() > 1);
         for line in lines {
-            assert!(measure(&font, 60.0, &line) <= 300.0, "{line}");
+            assert!(measure(&font, 40.0, &line) <= 300.0, "{line}");
         }
     }
 
+    /// The layout assumes a monospace face: every cell the same width.
     #[test]
-    fn kerning_is_read_from_the_embedded_fonts() {
-        let font = display();
-        let apart = measure(&font, 60.0, "A") + measure(&font, 60.0, "V");
-        assert!(measure(&font, 60.0, "AV") < apart, "AV should kern tighter");
+    fn the_embedded_face_is_monospace_and_has_the_box_glyphs() {
+        let font = FontRef::try_from_slice(REGULAR).unwrap();
+        let w = measure(&font, BASE, "i");
+        assert_eq!(measure(&font, BASE, "W"), w);
+        assert!((w - char_width(BASE)).abs() < 0.01, "cell is {w}");
+        for c in ['\u{25b8}', '\u{2500}', '\u{b7}', '\u{2026}'] {
+            assert_ne!(font.glyph_id(c).0, 0, "{c:?} missing from the subset");
+        }
     }
 
     #[test]
