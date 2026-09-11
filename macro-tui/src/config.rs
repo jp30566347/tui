@@ -12,7 +12,7 @@ const APP: &str = "macro-tui";
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Tab to open on, 1 for the board and 2 for news.
+    /// Tab to open on: 1 for the movers, 2 for the board, 3 for news.
     pub tab: Option<u8>,
 }
 

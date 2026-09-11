@@ -17,8 +17,8 @@ use color_eyre::eyre::Result;
     about = "Macro market overview and news for the terminal"
 )]
 struct Cli {
-    /// Starting tab (1=Board, 2=News)
-    #[arg(short, long, value_parser = clap::value_parser!(u8).range(1..=2))]
+    /// Starting tab (1=Movers, 2=Board, 3=News)
+    #[arg(short, long, value_parser = clap::value_parser!(u8).range(1..=3))]
     tab: Option<u8>,
 
     /// Print every instrument on the board and exit
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
 
     tui_common::terminal::install_hooks()?;
 
-    let tab = usize::from(settings.tab.unwrap_or(1).clamp(1, 2) - 1);
+    let tab = usize::from(settings.tab.unwrap_or(1).clamp(1, 3) - 1);
     let mut app = app::App::new(tab);
     let mut tui = tui::Tui::new()?;
 

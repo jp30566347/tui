@@ -4,12 +4,20 @@
 
 A macro market overview and the news moving it, in your terminal.
 
-Twenty-six instruments on one screen: US indices and volatility, Treasury
-yields and the dollar, commodities, foreign exchange and crypto, and the G7
-world indices. Each row carries a live price, its move, and a month of daily
-closes as a trend line. Pick one and get a full chart plus the headlines that
-mention it. Pick a headline and read the whole story without leaving the
-terminal, or turn it into an image ready to paste into a post.
+It opens on the day's movers: only the instruments that have gone more than a
+percent, each as a card carrying its price, its move and a month of daily
+closes, with the one or two macro stories behind the session over them. The
+grid reflows to the terminal, from five cards across on a wide one down to a
+single column, and a card drops its trend rather than clipping a price when
+the space runs out.
+
+Behind that is the whole board. Twenty-six instruments on one screen: US
+indices and volatility, Treasury yields and the dollar, commodities, foreign
+exchange and crypto, and the G7 world indices. Each row carries a live price,
+its move, and a month of daily closes as a trend line. Pick one and get a full
+chart plus the headlines that mention it. Pick a headline and read the whole
+story without leaving the terminal, or turn it into an image ready to paste
+into a post.
 
 No API key, no signup, no configuration. It works the moment it starts.
 
@@ -34,13 +42,13 @@ source.
 
 | Key | Action |
 |---|---|
-| `1` `2`, `Tab` | switch between the board and news |
-| `j` `k`, arrows | move the selection |
+| `1` `2` `3`, `Tab` | the movers, the board, the news |
+| `j` `k`, arrows | move the selection, a whole row at a time on the movers grid |
 | `Ctrl-D` `Ctrl-U` | half page down / up |
-| `g` `G`, Home/End | first / last row |
-| `h` `l` | board: jump group. news: cycle section. detail: switch chart range |
-| `Enter` | board: open the detail view. news: read the story |
-| `n` `N` | scroll the board's news rail |
+| `g` `G`, Home/End | first / last |
+| `h` `l` | movers: previous / next card. board: jump group. news: cycle section. detail: switch chart range |
+| `Enter` | movers, board: open the detail view. news: read the story |
+| `n` `N` | movers: pick one of the macro stories. board: scroll the news rail |
 | `f` | rail: matched headlines, or the whole pool |
 | `o` | read the selected story |
 | `c` | copy the selected story as an image, for a post |
@@ -48,8 +56,29 @@ source.
 | `Esc` | close the story, the detail view or an overlay. Never quits |
 | `q`, `Ctrl-C` | quit |
 
-`macro-tui --list-symbols` prints the board. `--tab 2` starts on news, and
-`--save-config` remembers it.
+`macro-tui --list-symbols` prints the board. `--tab 2` starts on the board and
+`--tab 3` on the news, and `--save-config` remembers it.
+
+## The day's movers
+
+The first tab carries only what actually moved: any instrument whose change
+since the previous close is more than one percent, biggest move first, whether
+it rose or fell. A quiet session leaves it empty, which is itself worth
+knowing, so it says so and names the largest move there was.
+
+Each card is the instrument's name, its price, the move in both its own units
+and in percent, and a month of daily closes. The grid is laid out to the
+terminal it finds: as many cards across as fit comfortably, centred, and a
+card that cannot hold a trend loses it before it loses a number. A short
+window trades the trends for a second row of cards, because how much of the
+day is on screen matters more than the shape of any one move.
+
+Above the cards sit the one or two stories behind the session: the payrolls
+number, the inflation print, whatever the Fed said. They are picked out of the
+same pool the News tab shows, by the terms that mark a story as macro rather
+than as one company's news, and fall back to the newest headlines when the
+pool has nothing macro in it. `n` moves between them and `Enter` on a card
+opens that instrument's detail view.
 
 ## Reading and sharing a story
 
