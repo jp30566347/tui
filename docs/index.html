@@ -9,228 +9,59 @@
 <meta property="og:title" content="tui — terminal apps">
 <meta property="og:description" content="Small, fast terminal applications. One binary each, no API keys, no configuration.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://jp30566347.github.io/tui/">
-<style>
-:root{
-  --bg:#0b0c11; --surface:#12131a; --raised:#171925; --line:#252939;
-  --fg:#e7eaf3; --muted:#8b91a8; --dim:#5a6070;
-  --ice:#4dc4d6; --green:#5fd39a;
-  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
-}
-*{box-sizing:border-box}
-html{-webkit-text-size-adjust:100%}
-body{
-  margin:0; background:var(--bg); color:var(--fg);
-  font-family:var(--sans); font-size:16px; line-height:1.6;
-  -webkit-font-smoothing:antialiased;
-}
-a{color:var(--ice)} a:hover{color:var(--fg)}
-.wrap{max-width:1040px; margin:0 auto; padding:0 24px}
-
-header{padding:88px 0 12px; text-align:center}
-.logo{
-  font-family:var(--mono); font-size:15px; letter-spacing:.14em;
-  text-transform:uppercase; color:var(--dim); margin:0 0 26px;
-}
-h1{font-size:clamp(2.1rem,6vw,3.2rem); line-height:1.1; margin:0 0 18px; letter-spacing:-.02em; font-weight:650}
-h1 .accent{color:var(--ice)}
-.tagline{font-size:clamp(1.02rem,2.4vw,1.18rem); color:var(--muted); max-width:620px; margin:0 auto 12px}
-.tagline strong{color:var(--fg); font-weight:600}
-
-section{padding:64px 0 0}
-h2{
-  font-size:1.05rem; font-family:var(--mono); font-weight:600;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--ice);
-  margin:0 0 28px; padding-bottom:12px; border-bottom:1px solid var(--line);
-}
-
-/* --- project cards ----------------------------------------------------- */
-.projects{display:grid; gap:28px}
-.card{
-  display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);
-  gap:0; background:var(--surface); border:1px solid var(--line);
-  border-radius:14px; overflow:hidden;
-  transition:border-color .15s;
-}
-.card:hover{border-color:#3a4059}
-.card-body{padding:30px 30px 26px}
-.card h3{margin:0 0 4px; font-size:1.35rem; letter-spacing:-.01em}
-.card h3 a{color:var(--fg); text-decoration:none}
-.card h3 a:hover{color:var(--ice)}
-.card .what{margin:0 0 16px; color:var(--muted); font-size:.95rem}
-.card .tags{
-  font-family:var(--mono); font-size:.74rem; color:var(--dim);
-  display:flex; gap:6px; flex-wrap:wrap; margin:0 0 20px;
-}
-.card .tags span{border:1px solid var(--line); border-radius:999px; padding:3px 10px}
-.card-shot{
-  background:#0d0e14; border-left:1px solid var(--line);
-  display:flex; align-items:center; justify-content:center; overflow:hidden; padding:18px;
-}
-.card-shot img{width:100%; height:auto; display:block; border-radius:6px}
-@media (max-width:760px){
-  .card{grid-template-columns:1fr}
-  .card-shot{border-left:0; border-top:1px solid var(--line)}
-}
-
-.mini{
-  display:flex; align-items:stretch;
-  background:var(--bg); border:1px solid var(--line); border-radius:9px;
-  overflow:hidden; margin:0 0 16px;
-}
-.mini code{
-  flex:1; min-width:0; font-family:var(--mono); font-size:.72rem;
-  padding:11px 12px; color:var(--fg); line-height:1.5;
-  white-space:pre-wrap; overflow-wrap:anywhere;
-}
-.mini code .prompt{color:var(--green); user-select:none}
-.mini button{
-  flex:none; border:0; border-left:1px solid var(--line);
-  background:var(--raised); color:var(--muted); cursor:pointer;
-  font-family:var(--sans); font-size:.78rem; font-weight:600;
-  padding:0 15px; transition:color .12s,background .12s; white-space:nowrap;
-}
-.mini button:hover{background:#1e2130; color:var(--fg)}
-.mini button.done{color:var(--green)}
-.more{font-size:.9rem}
-
-footer{
-  margin-top:88px; padding:32px 0 56px; border-top:1px solid var(--line);
-  color:var(--dim); font-size:.88rem;
-  display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;
-}
-footer a{color:var(--muted)}
-</style>
+<meta property="og:url" content="https://tui.jp305.dev/">
+<meta property="og:image" content="https://tui.jp305.dev/macro-tui/screenshot.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="wrap">
-
-<header>
-  <p class="logo">jp30566347 / tui</p>
-  <h1>Small things that live in a <span class="accent">terminal</span>.</h1>
-  <p class="tagline">
-    One static binary each. <strong>No API keys, no signup, no configuration.</strong>
-    They inherit your terminal's colours and render to stderr, so piping still works.
-  </p>
-</header>
-
-<section>
-  <h2>Projects</h2>
-  <div class="projects">
-
-    <article class="card">
-      <div class="card-body">
-        <h3><a href="macro-tui/">macro-tui</a></h3>
-        <p class="what">
-          Twenty-six macro instruments on one screen with live prices, a month
-          of daily closes, and the headlines moving them. Pick a row for a
-          chart and the news that mentions it.
-        </p>
-        <p class="tags">
-          <span>markets</span><span>live prices</span><span>news</span>
-        </p>
-        <div class="mini">
-          <code><span class="prompt">$ </span>curl -fsSL https://jp30566347.github.io/tui/macro-tui/install.sh | sh</code>
-          <button type="button" data-cmd="curl -fsSL https://jp30566347.github.io/tui/macro-tui/install.sh | sh">Copy</button>
-        </div>
-        <p class="more"><a href="macro-tui/">Read more &rarr;</a></p>
-      </div>
-      <div class="card-shot">
-        <img src="macro-tui/screenshot.png" alt="macro-tui showing US indices, Treasury yields and commodities with colour-coded moves and trend lines." loading="lazy">
-      </div>
-    </article>
-
-    <article class="card">
-      <div class="card-body">
-        <h3><a href="nhl-tui/">nhl-tui</a></h3>
-        <p class="what">
-          Live scores, the wild card race, the schedule and the scoring
-          leaders. Pick a game and get the whole boxscore, period by period.
-        </p>
-        <p class="tags">
-          <span>hockey</span><span>live scores</span><span>standings</span>
-        </p>
-        <div class="mini">
-          <code><span class="prompt">$ </span>curl -fsSL https://jp30566347.github.io/tui/nhl-tui/install.sh | sh</code>
-          <button type="button" data-cmd="curl -fsSL https://jp30566347.github.io/tui/nhl-tui/install.sh | sh">Copy</button>
-        </div>
-        <p class="more"><a href="nhl-tui/">Read more &rarr;</a></p>
-      </div>
-      <div class="card-shot">
-        <img src="nhl-tui/screenshot.png" alt="nhl-tui showing a full slate of final scores for one night." loading="lazy">
-      </div>
-    </article>
-
+<nav class="status"><div class="wrap status-in">
+  <a class="brand" href="./"><b>▚</b> tui</a>
+  <div class="tabs">
+    <a href="macro-tui/"><span>1:</span>macro-tui</a>
+    <a href="nhl-tui/"><span>2:</span>nhl-tui</a>
+    <a href="https://github.com/jp30566347/tui">github</a>
   </div>
-</section>
+</div></nav>
+<main class="wrap">
+<h1 class="sr-only">tui — terminal apps</h1>
+<div class="banner"><pre aria-hidden="true">████████  ██    ██  ██████
+   ██     ██    ██    ██
+   ██     ██    ██    ██
+   ██     ██    ██    ██
+   ██      ██████   ██████</pre></div>
+<p class="tagline">small · fast · keyless</p>
 
-<section>
-  <h2>Built the same way</h2>
-  <p style="color:var(--muted); max-width:700px; margin:0 0 14px">
-    Both are Rust, both are built on <a href="https://ratatui.rs">ratatui</a>, and
-    both share a <code>tui-common</code> crate for the parts that are the same in
-    any terminal app: the terminal lifecycle, the event pump, the config loader
-    and the layout helpers. A bug fixed there is fixed in both.
-  </p>
-  <p style="color:var(--muted); max-width:700px; margin:0">
-    They use only public, keyless data sources, which is why there is nothing
-    to configure. Everything lives in
-    <a href="https://github.com/jp30566347/tui">one repository</a>.
-  </p>
-</section>
+<p class="session"><span class="prompt">$</span> <span data-type>tui --list</span><span class="cursor" aria-hidden="true"></span></p>
+<p class="lede">2 apps — <strong>one static binary each. No API keys, no signup, no configuration.</strong> They inherit your terminal's colours and render to stderr, so piping still works.</p>
 
-<footer>
-  <span>MIT licensed.</span>
-  <span><a href="https://github.com/jp30566347/tui">Source on GitHub</a></span>
-</footer>
+<article class="app">
+  <div class="app-head"><span class="idx">01</span><h2><a href="macro-tui/">macro-tui</a></h2><span class="ver">rust · ratatui</span></div>
+  <p class="app-desc">Twenty-six macro instruments on one screen — live prices, a month of daily closes, and the headlines moving them. Pick a row for a chart and the news that mentions it.</p>
+  <p class="meta">markets · live prices · news · ~2 MB · linux / macos · mit</p>
+  <div class="cmd"><code><span class="prompt">$ </span>curl -fsSL https://tui.jp305.dev/macro-tui/install.sh | sh</code><button type="button" data-cmd="curl -fsSL https://tui.jp305.dev/macro-tui/install.sh | sh">copy</button></div>
+  <div class="app-links"><a href="macro-tui/">open macro-tui/ &rarr;</a><a href="https://github.com/jp30566347/tui/releases">releases</a></div>
+  <div class="term"><div class="titlebar"><i class="d"></i><i class="d"></i><i class="d"></i><span>macro-tui — board</span></div><img src="macro-tui/screenshot.png" alt="macro-tui showing US indices, Treasury yields and commodities with colour-coded moves and trend lines." width="2180" height="1581" loading="lazy"></div>
+</article>
 
-</div>
+<article class="app">
+  <div class="app-head"><span class="idx">02</span><h2><a href="nhl-tui/">nhl-tui</a></h2><span class="ver">rust · ratatui</span></div>
+  <p class="app-desc">Live scores, the wild card race, the schedule and the scoring leaders. Pick a game and get the whole boxscore, period by period.</p>
+  <p class="meta">hockey · live scores · standings · ~2 MB · linux / macos · mit</p>
+  <div class="cmd"><code><span class="prompt">$ </span>curl -fsSL https://tui.jp305.dev/nhl-tui/install.sh | sh</code><button type="button" data-cmd="curl -fsSL https://tui.jp305.dev/nhl-tui/install.sh | sh">copy</button></div>
+  <div class="app-links"><a href="nhl-tui/">open nhl-tui/ &rarr;</a><a href="https://github.com/jp30566347/tui/releases">releases</a></div>
+  <div class="term"><div class="titlebar"><i class="d"></i><i class="d"></i><i class="d"></i><span>nhl-tui — scores</span></div><img src="nhl-tui/screenshot.png" alt="nhl-tui showing a full slate of final scores for one night." width="2108" height="1094" loading="lazy"></div>
+</article>
 
-<script>
-// Every copy button on the page behaves the same way.
-(function () {
-  function legacyCopy(text) {
-    var field = document.createElement('textarea');
-    field.value = text;
-    field.setAttribute('readonly', '');
-    field.style.cssText = 'position:fixed;top:-9999px;opacity:0';
-    document.body.appendChild(field);
-    field.select();
-    var ok = false;
-    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
-    document.body.removeChild(field);
-    return ok;
-  }
+<p class="pline"><span class="prompt">$</span> cat method.txt</p>
+<pre class="out"><b>common</b>   terminal lifecycle · event pump · config · size-capped http · layout
+<b>macro</b>    state, keys, screens — markets
+<b>nhl</b>      state, keys, screens — hockey
+feeds    public + keyless → nothing to configure
+repo     one repository: github.com/jp30566347/tui</pre>
 
-  function copy(text) {
-    if (navigator.clipboard && window.isSecureContext) {
-      // Raced against a timeout: a browser that puts the write behind a
-      // permission prompt can leave the promise unresolved, and the button
-      // would then never give any feedback at all.
-      var timeout = new Promise(function (_, reject) {
-        setTimeout(function () { reject(new Error('timed out')); }, 1200);
-      });
-      return Promise.race([navigator.clipboard.writeText(text), timeout])
-        .then(function () { return true; })
-        .catch(function () { return legacyCopy(text); });
-    }
-    return Promise.resolve(legacyCopy(text));
-  }
-
-  document.querySelectorAll('.mini button').forEach(function (button) {
-    button.addEventListener('click', function () {
-      copy(button.dataset.cmd).then(function (ok) {
-        button.textContent = ok ? 'Copied' : 'Press ⌘C';
-        button.classList.toggle('done', ok);
-        setTimeout(function () {
-          button.textContent = 'Copy';
-          button.classList.remove('done');
-        }, 1800);
-      });
-    });
-  });
-})();
-</script>
+<footer><span>mit licensed.</span><span>stdout stays free — everything renders to stderr.</span></footer>
+</main>
+<script src="app.js" defer></script>
 </body>
 </html>
