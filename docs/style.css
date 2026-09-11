@@ -116,6 +116,16 @@ a:focus-visible,button:focus-visible{outline:1px solid var(--acc); outline-offse
 .term img{display:block; width:100%; height:auto}
 .cap{font-size:12.5px; color:var(--dim); margin:8px 2px 0}
 
+/* recorded demo: a poster frame until app.js swaps the GIF in, and a control
+   in the title bar so a reader can stop the motion. The title bar span is no
+   longer the last child once the button is there, so give it its margin back. */
+.demo .titlebar span{margin-left:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.pp{margin-left:auto; flex:none; border:1px solid var(--line); border-radius:4px;
+  background:transparent; color:var(--dim); cursor:pointer;
+  font-family:var(--mono); font-size:11px; line-height:1; padding:4px 9px;
+  transition:color .15s ease, border-color .15s ease}
+.pp:hover{color:var(--fg); border-color:#2f3750}
+
 /* prose blocks */
 .pline{color:var(--dim); font-size:13px; margin:40px 0 10px}
 pre.out{border:1px solid var(--line); border-radius:6px; background:var(--panel); padding:14px 16px; font-size:13px; line-height:1.7;

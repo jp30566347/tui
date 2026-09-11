@@ -4,7 +4,7 @@
 
 NHL scores, standings, schedule, and leaders in your terminal.
 
-![A night's scores](../docs/nhl-tui/screenshot.png)
+![nhl-tui: a night's scores, a boxscore, the wild card race and the leaders](../docs/nhl-tui/demo.gif)
 
 ## Installation
 

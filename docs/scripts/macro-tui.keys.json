@@ -1,0 +1,17 @@
+[
+  [3.0, "", "quotes, closes and headlines all land"],
+  [1.6, "2", "the board"],
+  [1.1, "j", "down the rows"],
+  [0.45, "j"],
+  [0.45, "j"],
+  [1.4, "\r", "open the detail view"],
+  [1.2, "l", "start the six-month fetch"],
+  [0.35, "h", "and straight back, so the round trip happens off screen"],
+  [1.8, "l", "six months, now drawn rather than empty"],
+  [3.0, "\u001b", "close the detail view"],
+  [1.4, "3", "the news rail"],
+  [1.6, "j", "down the headlines"],
+  [0.55, "j"],
+  [2.0, "1", "back to the movers"],
+  [2.0, "", "hold on the movers"]
+]

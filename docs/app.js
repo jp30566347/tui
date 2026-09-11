@@ -61,6 +61,63 @@
     })();
   }
 
+  /* ---- play the recorded demos -------------------------------------- */
+
+  /* Each demo ships as a poster PNG with the GIF named on the img. The GIF is
+     only fetched once the frame is on screen, and never when the reader has
+     asked for less motion — a GIF cannot be stopped, so the button is the only
+     way back out of one. */
+
+  Array.prototype.forEach.call(document.querySelectorAll('.demo'), function (frame) {
+    var img = frame.querySelector('img[data-demo]');
+    var button = frame.querySelector('.pp');
+    if (!img || !button) return;
+
+    var poster = img.getAttribute('src');
+    var running = false;
+
+    function play() {
+      img.src = img.getAttribute('data-demo');
+      running = true;
+      button.textContent = 'pause';
+    }
+
+    function pause() {
+      img.src = poster;
+      running = false;
+      button.textContent = 'play';
+    }
+
+    button.hidden = false;
+    button.textContent = 'play';
+    button.addEventListener('click', function () {
+      if (running) pause(); else play();
+    });
+
+    if (calm) return;
+    if (!('IntersectionObserver' in window)) { play(); return; }
+
+    var near = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        play();
+        near.unobserve(entry.target);
+      });
+    }, { rootMargin: '0px 0px -10% 0px' });
+
+    near.observe(frame);
+
+    // Belt and braces, as with the reveal below: if the observer never
+    // reports, start the one demo nearest the top rather than leave every
+    // frame sitting on its poster with no sign that it moves.
+    setTimeout(function () {
+      if (!running && frame.getBoundingClientRect().top < window.innerHeight) {
+        near.unobserve(frame);
+        play();
+      }
+    }, 1500);
+  });
+
   /* ---- reveal blocks as they arrive --------------------------------- */
 
   var main = document.querySelector('main');
