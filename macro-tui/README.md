@@ -21,7 +21,7 @@ into a post.
 
 No API key, no signup, no configuration. It works the moment it starts.
 
-![The board](../docs/macro-tui/screenshot.png)
+![macro-tui: the movers, the board, a detail chart and the news rail](../docs/macro-tui/demo.gif)
 
 
 ## Install

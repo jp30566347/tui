@@ -1,0 +1,19 @@
+[
+  [1.1, "", "let the first fetch land"],
+  [0.7, "d", "jump to any date"],
+  [0.5, "2026-03-14", "a full fourteen-game slate; bump this once it ages"],
+  [0.7, "\r"],
+  [2.4, "j", "down the slate"],
+  [0.4, "j"],
+  [0.4, "j"],
+  [1.3, "\r", "open the boxscore"],
+  [2.6, "j", "scroll it"],
+  [0.45, "j"],
+  [0.45, "j"],
+  [1.8, "\u001b", "close it"],
+  [1.2, "2", "standings, which open on the wild card race"],
+  [3.0, "4", "skaters"],
+  [2.6, "l", "next leader category: points to goals"],
+  [2.6, "1", "back to the scores"],
+  [2.0, "", "hold on the slate"]
+]

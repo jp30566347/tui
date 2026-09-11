@@ -29,6 +29,7 @@ crates/tui-common/   the parts both apps need
 macro-tui/           markets
 nhl-tui/             hockey
 docs/                the website, deployed to GitHub Pages
+docs/scripts/        records the demo GIFs on the site
 ```
 
 `tui-common` holds what was duplicated between the two before they moved into
@@ -54,6 +55,11 @@ moved:
 ```sh
 cargo test -p macro-tui -- --ignored --nocapture
 ```
+
+The demo GIFs on the site are recorded, not drawn: `docs/scripts/record-demos.sh`
+drives the release binaries in a pty against the live feeds and renders the
+result with [agg](https://github.com/asciinema/agg). Re-run it when a screen
+changes enough that the recording no longer matches the app.
 
 ## Releasing
 
