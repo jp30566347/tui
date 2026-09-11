@@ -19,11 +19,11 @@ chart plus the headlines that mention it. Pick a headline and read the whole
 story without leaving the terminal, or turn it into an image ready to paste
 into a post.
 
-There is also the mega-cap tab: the fifteen largest US companies read as one
-group rather than as a watchlist. It leads with the day's move weighted by
-market capitalisation against the same move with every name counted once,
-because when those two diverge the session was carried by a handful of names
-and the average company did something else.
+There is also the Dow tab, which takes an instrument already on the board and
+shows what is inside it: the thirty companies in the average, and what each
+one added to or took off the index today in index points. The board says the
+Dow rose 583. This says Caterpillar alone was 101 of that, and UnitedHealth
+cost it 59.
 
 No API key, no signup, no configuration. It works the moment it starts.
 
@@ -63,44 +63,51 @@ source.
 | `q`, `Ctrl-C` | quit |
 
 `macro-tui --list-symbols` prints the board. `--tab` picks the starting tab —
-1 movers, 2 board, 3 mega caps, 4 news — and `--save-config` remembers it. The
-cohort took slot 3 in 0.4.0, so a config written before that now opens on the
-mega caps where it used to open on news.
+1 movers, 2 board, 3 the Dow 30, 4 news — and `--save-config` remembers it.
+The Dow tab took slot 3 in 0.4.0, so a config written before that now opens on
+it where it used to open on news.
 
-## The mega caps
+## The Dow 30
 
-Fifteen of the largest US companies, and deliberately a cohort rather than a
-watchlist: nothing here is about one company, and there is no per-name detail
-view.
+The board carries the Dow Jones Industrial Average as one row. This tab is
+that row taken apart.
 
-Two lines sit above the table. The first is the day's move weighted by market
-capitalisation beside the same move with every name counted once. When they
-diverge the day was narrow, carried by its biggest members while the average
-name did less, and the tab says so in a word. The threshold for saying it is
-not zero, because two weightings of the same fifteen names differ by basis
-points on almost any day and calling that "narrow" would make the word
-worthless. The second line is where the group sits in its own year: the median
-position in the 52-week band, how many are near their high, and how much of
-the cohort's capitalisation its three largest names hold.
+The average is price-weighted, and that is the fact the whole tab turns on. A
+member's effect on the index depends on its share price and nothing else: an
+$800 stock moves the Dow roughly eight times as far as a $100 one on the same
+percentage move, whatever the two companies are worth. So the `pts` column is
+what each name added to or took off the index today, in index points, and the
+thirty add up to the move the board shows.
+
+The divisor that converts share prices into index points is not hardcoded. It
+is recovered each refresh from yesterday's settled closes and the index's own
+close, which is possible precisely because the average is a sum over a
+constant. Yesterday's prices are used rather than today's because they are
+simultaneous: during a session the index ticks continuously while each
+member's last trade is its own instant, and that skew would wobble the figure.
+
+That derivation doubles as a check on the membership list, which is hardcoded.
+The divisor only moves on a split or a substitution, and a member that has
+been replaced shifts the sum by that company's entire share price, which is a
+much larger move than a split. If the derived divisor has drifted from the
+value recorded when the list was last reviewed, the tab says so on screen and
+the live test fails with the same complaint. The panel title carries the
+review date.
+
+Above the table, the day's move price-weighted beside the same day with every
+member counted once. When they diverge the index was carried by its dearest
+names, the ones price weighting gives the most say, and the tab says so in a
+word. The threshold for saying it is not zero, because two weightings of the
+same thirty names differ by basis points on almost any day and calling that
+"narrow" would make the word worthless.
 
 Each row then shows where that name sits in its own 52-week band as a filled
-bar, how far it is below its 52-week high, and today's volume against its
-ten-day average. The bar fills to the position rather than colouring by
-direction, so it reads without being able to tell red from green — and so it
-is not mistaken for a statement about today's move, which it is not. `h` and
-`l` reorder the table by capitalisation, by position in the band, or by the
-size of today's move. A dot beside a name means a headline in the pool
-mentions it.
-
-Weighting is taken from each name's capitalisation *before* today's move.
-Using the reported cap directly would let a name's own gain inflate the weight
-that gain is counted at, which biases the cap-weighted figure upward on an up
-day — exactly the error that would make the divergence look larger than it is.
-
-The cohort is a hardcoded list reviewed by hand, and the panel title carries
-the date it was last checked. An index constituent list is a licensed product,
-and over weeks to months the largest names barely change, so a static table is
-both cheaper and safer than deriving one.
+bar, how far it is below that high, and today's volume against its ten-day
+average. The bar fills to the position rather than colouring by direction, so
+it reads without being able to tell red from green, and so it is not mistaken
+for a statement about today's move, which it is not. `h` and `l` reorder the
+table by points, by share price, by position in the band, or by percentage
+move. A dot beside a name means a headline in the pool mentions it.
 
 ## The day's movers
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>macro-tui — the market, in your terminal</title>
-<meta name="description" content="A macro market overview and the news moving it, in your terminal. 26 instruments plus the fifteen largest US companies, live prices, trend lines and headlines. No API key, no signup.">
+<meta name="description" content="A macro market overview and the news moving it, in your terminal. 26 instruments plus the Dow 30 broken out by what each name contributed in index points. No API key, no signup.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>▚</text></svg>">
 <meta property="og:title" content="macro-tui — the market, in your terminal">
 <meta property="og:description" content="26 macro instruments, live prices, trend lines and headlines. No API key, no signup.">
@@ -42,7 +42,7 @@
 <div><dt>commodities</dt><dd>WTI, Brent, gold, silver, copper, nat gas.</dd></div>
 <div><dt>fx + crypto</dt><dd>EUR/USD, USD/JPY, GBP/USD, BTC, ETH.</dd></div>
 <div><dt>world indices</dt><dd>DAX, FTSE 100, CAC 40, Nikkei 225, S&amp;P/TSX, FTSE MIB.</dd></div>
-<div><dt>mega caps</dt><dd>The fifteen largest US companies as a cohort, not a watchlist: cap-weighted against equal-weighted move, so a day carried by two names reads differently from a broad one. Each row shows where it sits in its own 52-week band.</dd></div>
+<div><dt>the dow 30</dt><dd>The average on the board, taken apart into the thirty names in it. What each one added to or took off the index <em>in index points</em>, since the Dow is price-weighted and a $800 stock moves it eight times as far as a $100 one. Plus where each sits in its own 52-week band.</dd></div>
 <div><dt>news</dt><dd>CNBC top / economy / finance, merged + deduped, filtered to the selected row. <code>o</code> reads the full story in the terminal; <code>c</code> copies it as a 1600×900 image.</dd></div>
 </dl>
 
@@ -58,9 +58,9 @@
 <div class="keys">
 <table><tr><th>key</th><th>does</th></tr>
 <tr><td>j k</td><td>move the selection</td></tr>
-<tr><td>h l</td><td>jump group, reorder the cohort, switch range</td></tr>
+<tr><td>h l</td><td>jump group, reorder the Dow, switch range</td></tr>
 <tr><td>Enter</td><td>open the detail view</td></tr>
-<tr><td>1 2 3 4</td><td>movers, board, mega caps, news</td></tr></table>
+<tr><td>1 2 3 4</td><td>movers, board, the Dow 30, news</td></tr></table>
 <table><tr><th>key</th><th>does</th></tr>
 <tr><td>n N f</td><td>scroll and widen the news rail</td></tr>
 <tr><td>o</td><td>read a story, in the terminal</td></tr>

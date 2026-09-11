@@ -3,8 +3,8 @@ mod api;
 mod app;
 mod card;
 mod catalog;
-mod cohort;
 mod config;
+mod dow;
 mod tui;
 mod ui;
 
@@ -18,7 +18,7 @@ use color_eyre::eyre::Result;
     about = "Macro market overview and news for the terminal"
 )]
 struct Cli {
-    /// Starting tab (1=Movers, 2=Board, 3=Mega caps, 4=News)
+    /// Starting tab (1=Movers, 2=Board, 3=Dow 30, 4=News)
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(1..=3))]
     tab: Option<u8>,
 

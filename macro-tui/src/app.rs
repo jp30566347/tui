@@ -19,8 +19,8 @@ use crate::api::models::{Quote, Series};
 use crate::api::rss::{Headline, Source};
 use crate::api::MarketClient;
 use crate::card::{self, Card, Ticker};
-use crate::catalog::{self, format_percent, Group, Instrument, INSTRUMENTS, MEGA_CAPS};
-use crate::cohort;
+use crate::catalog::{self, format_percent, Group, Instrument, DOW_30, INSTRUMENTS};
+use crate::dow;
 use tui_common::layout::cycle;
 
 /// How long news stays fresh before a tick will refetch it.
@@ -71,26 +71,48 @@ const MACRO_TERMS: &[&str] = &[
 pub enum Tab {
     Movers,
     Board,
-    MegaCaps,
+    Dow,
     News,
 }
 
-/// How the mega-cap tab orders its rows.
+/// How the Dow tab orders its rows.
 ///
-/// Three orders because each answers a different question: by weight, by
-/// where a name sits in its own year, and by what it did today.
+/// Four orders because each answers a different question: what moved the
+/// index, what can move it most, where a name sits in its own year, and what
+/// it did in its own terms.
+/// The board row the Dow tab reconciles against. The average's own quote is
+/// what makes the divisor recoverable and the contributions checkable.
+pub const DOW_INDEX_SYMBOL: &str = ".DJI";
+
+/// How far a quote's price moved today in absolute dollars. Ranking by this
+/// ranks by index points, since every member shares one divisor.
+fn swing(quote: &Quote) -> f64 {
+    quote
+        .prev_close
+        .map_or(0.0, |prev| (quote.last - prev).abs())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MegaSort {
-    /// Largest capitalisation first, which is also roughly index weight.
-    Cap,
+pub enum DowSort {
+    /// Biggest contribution to today's index move first, by absolute points.
+    /// The default, because it is the tab's whole subject.
+    Points,
+    /// Highest share price first, which in a price-weighted average is the
+    /// same thing as most index weight.
+    Weight,
     /// Highest in its own 52-week band first.
     Range,
-    /// Biggest absolute move today first.
+    /// Biggest percentage move today first.
     Move,
 }
 
-impl MegaSort {
-    pub const ALL: [MegaSort; 3] = [MegaSort::Cap, MegaSort::Range, MegaSort::Move];
+impl DowSort {
+    pub const ALL: [DowSort; 4] = [
+        DowSort::Points,
+        DowSort::Weight,
+        DowSort::Range,
+        DowSort::Move,
+    ];
 
     /// The panel's bottom hint, naming the order currently in force.
     ///
@@ -98,13 +120,16 @@ impl MegaSort {
     /// hint borrows for the program's life.
     pub fn hint(self) -> &'static str {
         match self {
-            MegaSort::Cap => {
-                " j/k \u{2195} \u{00b7} h/l sort: cap \u{00b7} r refresh \u{00b7} ? help "
+            DowSort::Points => {
+                " j/k \u{2195} \u{00b7} h/l sort: points \u{00b7} r refresh \u{00b7} ? help "
             }
-            MegaSort::Range => {
+            DowSort::Weight => {
+                " j/k \u{2195} \u{00b7} h/l sort: weight \u{00b7} r refresh \u{00b7} ? help "
+            }
+            DowSort::Range => {
                 " j/k \u{2195} \u{00b7} h/l sort: range \u{00b7} r refresh \u{00b7} ? help "
             }
-            MegaSort::Move => {
+            DowSort::Move => {
                 " j/k \u{2195} \u{00b7} h/l sort: move \u{00b7} r refresh \u{00b7} ? help "
             }
         }
@@ -116,13 +141,13 @@ impl MegaSort {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Movers, Tab::Board, Tab::MegaCaps, Tab::News];
+    pub const ALL: [Tab; 4] = [Tab::Movers, Tab::Board, Tab::Dow, Tab::News];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Tab::Movers => "Movers",
             Tab::Board => "Board",
-            Tab::MegaCaps => "Mega caps",
+            Tab::Dow => "Dow 30",
             Tab::News => "News",
         }
     }
@@ -236,8 +261,8 @@ pub struct App {
     /// Parallel to `INSTRUMENTS`. `None` means never fetched, or the endpoint
     /// did not recognise the symbol.
     pub quotes: Vec<Option<Quote>>,
-    /// Parallel to `MEGA_CAPS`, filled from the same quote response.
-    pub mega_quotes: Vec<Option<Quote>>,
+    /// Parallel to `DOW_30`, filled from the same quote response.
+    pub dow_quotes: Vec<Option<Quote>>,
     /// Merged across feeds, deduplicated, newest first.
     pub headlines: Vec<Headline>,
     pub history: HashMap<(Range, &'static str), Series>,
@@ -247,9 +272,9 @@ pub struct App {
 
     pub board_selected: usize,
     /// Which cohort row the cursor is on, as an index into the sorted order
-    /// the tab renders rather than into `MEGA_CAPS`.
-    pub mega_selected: usize,
-    pub mega_sort: MegaSort,
+    /// the tab renders rather than into `DOW_30`.
+    pub dow_selected: usize,
+    pub dow_sort: DowSort,
     /// Which mover card the cursor is on, as an index into `movers()` rather
     /// than into the catalog: the list is reordered by every refresh.
     pub movers_selected: usize,
@@ -301,13 +326,13 @@ impl App {
             reader: None,
             stories: HashMap::new(),
             quotes: vec![None; INSTRUMENTS.len()],
-            mega_quotes: vec![None; MEGA_CAPS.len()],
+            dow_quotes: vec![None; DOW_30.len()],
             headlines: Vec::new(),
             history: HashMap::new(),
             history_bad: HashSet::new(),
             board_selected: 0,
-            mega_selected: 0,
-            mega_sort: MegaSort::Cap,
+            dow_selected: 0,
+            dow_sort: DowSort::Points,
             movers_selected: 0,
             movers_news_scroll: 0,
             news_scroll: 0,
@@ -355,26 +380,26 @@ impl App {
     // --- mega-cap cohort -------------------------------------------------
 
     /// Cohort rows in the order the tab draws them, as indices into
-    /// `MEGA_CAPS`.
+    /// `DOW_30`.
     ///
     /// Unpriced names sink to the bottom in catalog order rather than being
     /// dropped: the tab's shape has to be stable across refreshes or the
     /// cursor would wander onto a different company mid-session.
-    pub fn mega_order(&self) -> Vec<usize> {
-        let mut rows: Vec<usize> = (0..MEGA_CAPS.len()).collect();
-        let sort = self.mega_sort;
+    pub fn dow_order(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = (0..DOW_30.len()).collect();
+        let sort = self.dow_sort;
         rows.sort_by(|a, b| {
-            let (qa, qb) = (self.mega_quotes[*a].as_ref(), self.mega_quotes[*b].as_ref());
+            let (qa, qb) = (self.dow_quotes[*a].as_ref(), self.dow_quotes[*b].as_ref());
             match (qa, qb) {
                 (Some(qa), Some(qb)) => match sort {
-                    MegaSort::Cap => qb
-                        .market_cap
-                        .unwrap_or(0.0)
-                        .total_cmp(&qa.market_cap.unwrap_or(0.0)),
-                    MegaSort::Range => cohort::range_position(qb)
+                    // The divisor is the same for every row, so ranking by
+                    // price change ranks by index points without needing it.
+                    DowSort::Points => swing(qb).total_cmp(&swing(qa)),
+                    DowSort::Weight => qb.last.total_cmp(&qa.last),
+                    DowSort::Range => dow::range_position(qb)
                         .unwrap_or(-1.0)
-                        .total_cmp(&cohort::range_position(qa).unwrap_or(-1.0)),
-                    MegaSort::Move => qb.change_pct.abs().total_cmp(&qa.change_pct.abs()),
+                        .total_cmp(&dow::range_position(qa).unwrap_or(-1.0)),
+                    DowSort::Move => qb.change_pct.abs().total_cmp(&qa.change_pct.abs()),
                 },
                 (Some(_), None) => Ordering::Less,
                 (None, Some(_)) => Ordering::Greater,
@@ -385,33 +410,50 @@ impl App {
         rows
     }
 
+    /// The Dow's own quote, off the board, for the divisor and the header.
+    ///
+    /// Looked up by symbol rather than by a remembered index, so reordering
+    /// the catalog cannot silently point this at a different instrument.
+    pub fn dow_index_quote(&self) -> Option<&Quote> {
+        let n = INSTRUMENTS
+            .iter()
+            .position(|i| i.cnbc == DOW_INDEX_SYMBOL)?;
+        self.quotes[n].as_ref()
+    }
+
+    /// The divisor that turns member prices into index points, or `None`
+    /// until every one of the thirty has a previous close.
+    pub fn dow_divisor(&self) -> Option<f64> {
+        dow::divisor(&self.dow_quotes, self.dow_index_quote()?)
+    }
+
     /// Whether any headline in the pool names this company.
     ///
     /// The tab has no room for a news pane, so this is the whole of the "why"
     /// it can offer: a marker saying the session has a story about this name,
     /// and the News tab is where to read it.
-    pub fn mega_in_the_news(&self, index: usize) -> bool {
-        let mega = &MEGA_CAPS[index];
+    pub fn dow_in_the_news(&self, index: usize) -> bool {
+        let mega = &DOW_30[index];
         self.headlines
             .iter()
             .any(|h| named(&h.haystack, mega.name, mega.aliases))
     }
 
     /// The cohort taken as one group, or `None` before any of it is priced.
-    pub fn mega_breadth(&self) -> Option<cohort::Breadth> {
-        cohort::breadth(&self.mega_quotes)
+    pub fn dow_session(&self) -> Option<dow::Session> {
+        dow::session(&self.dow_quotes)
     }
 
-    fn set_mega_selection(&mut self, to: isize) {
-        let max = MEGA_CAPS.len().saturating_sub(1) as isize;
-        self.mega_selected = to.clamp(0, max.max(0)) as usize;
+    fn set_dow_selection(&mut self, to: isize) {
+        let max = DOW_30.len().saturating_sub(1) as isize;
+        self.dow_selected = to.clamp(0, max.max(0)) as usize;
     }
 
-    fn cycle_mega_sort(&mut self, delta: isize) {
-        self.mega_sort = self.mega_sort.step(delta);
+    fn cycle_dow_sort(&mut self, delta: isize) {
+        self.dow_sort = self.dow_sort.step(delta);
         // The row under the cursor has moved, so the cursor goes back to the
         // top rather than following a name it was never pointing at.
-        self.mega_selected = 0;
+        self.dow_selected = 0;
     }
 
     /// Every priced row by the size of its move, biggest first. Ties keep
@@ -496,7 +538,7 @@ impl App {
         let keys: Vec<&'static str> = INSTRUMENTS
             .iter()
             .filter_map(|i| i.history)
-            .chain(MEGA_CAPS.iter().map(|m| m.history))
+            .chain(DOW_30.iter().map(|m| m.history))
             .filter(|k| !self.history_bad.contains(k))
             .collect();
 
@@ -590,9 +632,9 @@ impl App {
                             self.quotes[n] = Some(q.clone());
                         }
                     }
-                    for (n, mega) in MEGA_CAPS.iter().enumerate() {
+                    for (n, mega) in DOW_30.iter().enumerate() {
                         if let Some(q) = quotes.get(mega.cnbc) {
-                            self.mega_quotes[n] = Some(q.clone());
+                            self.dow_quotes[n] = Some(q.clone());
                         }
                     }
                     self.last_updated = Some(Local::now());
@@ -791,7 +833,7 @@ impl App {
 
             KeyCode::Char('1') => self.active_tab = Tab::Movers,
             KeyCode::Char('2') => self.active_tab = Tab::Board,
-            KeyCode::Char('3') => self.active_tab = Tab::MegaCaps,
+            KeyCode::Char('3') => self.active_tab = Tab::Dow,
             KeyCode::Char('4') => self.active_tab = Tab::News,
             KeyCode::Tab => self.active_tab = self.active_tab.next(),
             KeyCode::BackTab => self.active_tab = self.active_tab.prev(),
@@ -808,13 +850,13 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => match self.active_tab {
                 Tab::Movers => self.move_card(1),
                 Tab::Board => self.jump_group(1),
-                Tab::MegaCaps => self.cycle_mega_sort(1),
+                Tab::Dow => self.cycle_dow_sort(1),
                 Tab::News => self.cycle_news_filter(1),
             },
             KeyCode::Char('h') | KeyCode::Left => match self.active_tab {
                 Tab::Movers => self.move_card(-1),
                 Tab::Board => self.jump_group(-1),
-                Tab::MegaCaps => self.cycle_mega_sort(-1),
+                Tab::Dow => self.cycle_dow_sort(-1),
                 Tab::News => self.cycle_news_filter(-1),
             },
 
@@ -835,7 +877,7 @@ impl App {
                 // The detail view charts a catalog row, and a cohort row is
                 // not one. Nothing to open rather than a view that would have
                 // to be half built.
-                Tab::MegaCaps => {}
+                Tab::Dow => {}
                 Tab::News => return self.open_selected_story(),
             },
             KeyCode::Char('o') => return self.open_selected_story(),
@@ -931,7 +973,7 @@ impl App {
                 Tab::Board => (self.related_headlines().0, self.rail_scroll),
                 // No news pane on the cohort tab, so nothing is under the
                 // cursor for `o` or `c` to act on.
-                Tab::MegaCaps => (Vec::new(), 0),
+                Tab::Dow => (Vec::new(), 0),
             }
         };
         list.get(at).map(|h| (*h).clone())
@@ -1065,7 +1107,7 @@ impl App {
             // lands under the one it left rather than beside it.
             Tab::Movers => self.move_card(delta * self.grid_columns.get().max(1) as isize),
             Tab::Board => self.set_board_selection(self.board_selected as isize + delta),
-            Tab::MegaCaps => self.set_mega_selection(self.mega_selected as isize + delta),
+            Tab::Dow => self.set_dow_selection(self.dow_selected as isize + delta),
             Tab::News => {
                 let max = self.filtered_headlines().len().saturating_sub(1) as isize;
                 self.news_scroll =
@@ -1109,7 +1151,7 @@ impl App {
                 self.movers_selected = to.clamp(0, max.max(0)) as usize;
             }
             Tab::Board => self.set_board_selection(to),
-            Tab::MegaCaps => self.set_mega_selection(to),
+            Tab::Dow => self.set_dow_selection(to),
             Tab::News => {
                 let max = self.filtered_headlines().len().saturating_sub(1) as isize;
                 self.news_scroll = to.clamp(0, max.max(0)) as usize;
@@ -2025,8 +2067,8 @@ mod tests {
     #[test]
     fn tabs_cycle_in_both_directions() {
         assert_eq!(Tab::Movers.next(), Tab::Board);
-        assert_eq!(Tab::Board.next(), Tab::MegaCaps);
-        assert_eq!(Tab::MegaCaps.next(), Tab::News);
+        assert_eq!(Tab::Board.next(), Tab::Dow);
+        assert_eq!(Tab::Dow.next(), Tab::News);
         assert_eq!(Tab::News.next(), Tab::Movers);
         assert_eq!(Tab::Movers.prev(), Tab::News);
     }
@@ -2042,7 +2084,7 @@ mod tests {
         for (k, tab) in [
             ('4', Tab::News),
             ('1', Tab::Movers),
-            ('3', Tab::MegaCaps),
+            ('3', Tab::Dow),
             ('2', Tab::Board),
         ] {
             a.handle_key(key(k));

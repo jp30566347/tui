@@ -16,9 +16,9 @@ use ratatui::{
 use crate::api::article::{Article, Block as Text};
 use crate::api::models::{Quote, Series};
 use crate::api::rss::Headline;
-use crate::app::{App, Range, Story, Tab, MOVER_THRESHOLD};
-use crate::catalog::{format_percent, Group, Instrument, MegaCap, INSTRUMENTS, MEGA_CAPS};
-use crate::cohort;
+use crate::app::{App, DowSort, Range, Story, Tab, MOVER_THRESHOLD};
+use crate::catalog::{format_percent, DowStock, Group, Instrument, DOW_30, INSTRUMENTS};
+use crate::dow;
 use tui_common::layout::{centered_size, pad_left, pad_to_width, panel, scroll_offset, truncate};
 
 const SELECTED_BG: Color = Color::DarkGray;
@@ -94,7 +94,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         match app.active_tab {
             Tab::Movers => draw_movers(f, app, chunks[1]),
             Tab::Board => draw_board(f, app, chunks[1]),
-            Tab::MegaCaps => draw_mega_caps(f, app, chunks[1]),
+            Tab::Dow => draw_dow(f, app, chunks[1]),
             Tab::News => draw_news(f, app, chunks[1]),
         }
     }
@@ -268,25 +268,25 @@ fn ticker_row(
     pad_to_width(Line::from(spans).style(base), width)
 }
 
-// --- mega caps -----------------------------------------------------------
+// --- the Dow ------------------------------------------------------------
 
-/// Columns for the cohort table. The band is fixed width so every row's
-/// marker sits on the same scale and the column reads down as a distribution.
-const MEGA_NAME_WIDTH: usize = 13;
-const MEGA_CAP_WIDTH: usize = 9;
-const MEGA_LAST_WIDTH: usize = 11;
-const MEGA_PCT_WIDTH: usize = 8;
-const MEGA_DD_WIDTH: usize = 8;
-const MEGA_VOL_WIDTH: usize = 7;
+/// Columns for the members table. The band is fixed width so every row's fill
+/// sits on the same scale and the column reads down as a distribution.
+const DOW_NAME_WIDTH: usize = 19;
+const DOW_PRICE_WIDTH: usize = 10;
+const DOW_PCT_WIDTH: usize = 8;
+const DOW_PTS_WIDTH: usize = 8;
+const DOW_DD_WIDTH: usize = 8;
+const DOW_VOL_WIDTH: usize = 7;
 
-/// The largest US companies as one group, led by how broad the day was.
-fn draw_mega_caps(f: &mut Frame, app: &App, area: Rect) {
+/// The Dow taken apart into the thirty names in it.
+fn draw_dow(f: &mut Frame, app: &App, area: Rect) {
     let block = panel(
         format!(
-            " Mega caps \u{00b7} list reviewed {} ",
+            " Dow 30 \u{00b7} members reviewed {} ",
             crate::catalog::REVIEWED
         ),
-        app.mega_sort.hint(),
+        app.dow_sort.hint(),
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -294,22 +294,24 @@ fn draw_mega_caps(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let divisor = app.dow_divisor();
     let mut lines: Vec<Line> = Vec::new();
-    lines.extend(breadth_lines(app));
+    lines.extend(dow_header_lines(app, divisor));
     lines.push(Line::from(""));
-    lines.push(mega_header(app));
+    lines.push(dow_column_headings(app));
 
-    let order = app.mega_order();
+    let order = app.dow_order();
     let mut selected_line = lines.len();
     for (rank, index) in order.iter().enumerate() {
-        if rank == app.mega_selected {
+        if rank == app.dow_selected {
             selected_line = lines.len();
         }
-        lines.push(mega_row(
-            &MEGA_CAPS[*index],
-            app.mega_quotes[*index].as_ref(),
-            app.mega_in_the_news(*index),
-            rank == app.mega_selected,
+        lines.push(dow_row(
+            &DOW_30[*index],
+            app.dow_quotes[*index].as_ref(),
+            divisor,
+            app.dow_in_the_news(*index),
+            rank == app.dow_selected,
             inner.width,
         ));
     }
@@ -321,107 +323,150 @@ fn draw_mega_caps(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-/// The two lines the tab exists for.
-///
-/// Cap-weighted against equal-weighted is the whole point: when they diverge,
-/// the group's move was carried by its largest members and the average name
-/// did something else. The word at the end names that, and is left off when
-/// the gap is too small to mean anything.
-fn breadth_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(b) = app.mega_breadth() else {
-        return vec![Line::from(Span::styled(
-            "  waiting for prices\u{2026}",
-            MUTED,
-        ))];
-    };
-
-    let label = |s: &str| Span::styled(format!("  {s:<10}"), MUTED);
+/// The three lines the tab exists for: what the index did, how broadly, and
+/// where the thirty sit in their own year.
+fn dow_header_lines(app: &App, divisor: Option<f64>) -> Vec<Line<'static>> {
+    let label = |s: &str| Span::styled(format!("  {s:<9}"), MUTED);
     let dir = |v: f64| if v < 0.0 { DOWN } else { UP };
 
-    let mut first = vec![
-        label("breadth"),
-        Span::styled("cap-wtd ", MUTED),
-        Span::styled(format_percent(b.cap_weighted), dir(b.cap_weighted)),
+    let mut lines = Vec::new();
+
+    // The average itself, off the board, so the parts below have a whole to
+    // add up to.
+    let mut index_line = vec![label("index")];
+    match app.dow_index_quote() {
+        Some(q) => {
+            index_line.push(Span::styled(
+                crate::catalog::group_thousands(&format!("{:.2}", q.last)),
+                BOLD,
+            ));
+            index_line.push(Span::styled(
+                format!(
+                    "  {}{:.0}  ",
+                    if q.change < 0.0 { "\u{2212}" } else { "+" },
+                    q.change.abs()
+                ),
+                dir(q.change),
+            ));
+            index_line.push(Span::styled(
+                format_percent(q.change_pct),
+                dir(q.change_pct),
+            ));
+        }
+        None => index_line.push(Span::styled("\u{2014}", MUTED)),
+    }
+    if let Some(divisor) = divisor {
+        index_line.push(Span::styled(format!("   divisor {divisor:.5}"), MUTED));
+        // The divisor only moves on a split or a substitution, so a big drift
+        // from the value recorded at review means this build's membership
+        // list predates a reshuffle and every points figure below is off.
+        if dow::divisor_drift(divisor) > dow::STALE_DRIFT {
+            index_line.push(Span::styled(
+                "  members may be stale",
+                DOWN.add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    lines.push(Line::from(index_line));
+
+    let Some(session) = app.dow_session() else {
+        lines.push(Line::from(Span::styled(
+            "  waiting for prices\u{2026}",
+            MUTED,
+        )));
+        return lines;
+    };
+
+    // Price-weighted against equal-weighted. The gap is the whole point: the
+    // average is price-weighted, so a day carried by its dearest names shows
+    // up here and nowhere else on the board.
+    let mut session_line = vec![
+        label("session"),
+        Span::styled("price-wtd ", MUTED),
+        Span::styled(
+            format_percent(session.price_weighted),
+            dir(session.price_weighted),
+        ),
         Span::styled("   equal-wtd ", MUTED),
-        Span::styled(format_percent(b.equal_weighted), dir(b.equal_weighted)),
+        Span::styled(
+            format_percent(session.equal_weighted),
+            dir(session.equal_weighted),
+        ),
     ];
-    if let Some(shape) = b.shape() {
-        first.push(Span::styled(
+    if let Some(shape) = session.shape() {
+        session_line.push(Span::styled(
             format!("   {shape}"),
             HEADING.add_modifier(Modifier::BOLD),
         ));
     }
-    first.push(Span::styled(
-        format!("   {} up / {} down", b.advancing, b.declining),
+    session_line.push(Span::styled(
+        format!("   {} up / {} down", session.advancing, session.declining),
         MUTED,
     ));
-
-    let mut second = vec![label("range")];
-    match b.median_position {
-        Some(median) => second.push(Span::raw(format!("median {median:.0}% of 52w band"))),
-        None => second.push(Span::styled("no 52-week band", MUTED)),
+    if let Some(share) = session.top_three_share {
+        session_line.push(Span::styled(format!("   top 3 moved {share:.0}%"), MUTED));
     }
-    second.push(Span::styled(
+    lines.push(Line::from(session_line));
+
+    let mut range_line = vec![label("range")];
+    match session.median_position {
+        Some(median) => range_line.push(Span::raw(format!("median {median:.0}% of 52w band"))),
+        None => range_line.push(Span::styled("no 52-week band", MUTED)),
+    }
+    range_line.push(Span::styled(
         format!(
             "   {} of {} above {:.0}%",
-            b.near_high,
-            b.priced,
-            cohort::NEAR_HIGH
+            session.near_high,
+            session.priced,
+            dow::NEAR_HIGH
         ),
         MUTED,
     ));
-    if let Some(share) = b.top_three_share {
-        second.push(Span::styled(
-            format!("   top 3 = {share:.0}% of cohort"),
-            MUTED,
-        ));
-    }
+    lines.push(Line::from(range_line));
 
-    vec![Line::from(first), Line::from(second)]
+    lines
 }
 
-fn mega_header(app: &App) -> Line<'static> {
-    let sorted = |s: &str, by: crate::app::MegaSort| {
-        if app.mega_sort == by {
-            Span::styled(s.to_string(), HEADING.add_modifier(Modifier::BOLD))
+fn dow_column_headings(app: &App) -> Line<'static> {
+    let sorted = |s: String, by: DowSort| {
+        if app.dow_sort == by {
+            Span::styled(s, HEADING.add_modifier(Modifier::BOLD))
         } else {
-            Span::styled(s.to_string(), MUTED)
+            Span::styled(s, MUTED)
         }
     };
     Line::from(vec![
-        Span::styled(format!("  {:<MEGA_NAME_WIDTH$}", "name"), MUTED),
-        sorted(&pad_left("cap", MEGA_CAP_WIDTH), crate::app::MegaSort::Cap),
-        Span::styled(pad_left("last", MEGA_LAST_WIDTH), MUTED),
-        sorted(
-            &pad_left("chg%", MEGA_PCT_WIDTH),
-            crate::app::MegaSort::Move,
-        ),
+        Span::styled(format!("  {:<DOW_NAME_WIDTH$}", "name"), MUTED),
+        sorted(pad_left("price", DOW_PRICE_WIDTH), DowSort::Weight),
+        sorted(pad_left("chg%", DOW_PCT_WIDTH), DowSort::Move),
+        sorted(pad_left("pts", DOW_PTS_WIDTH), DowSort::Points),
         Span::raw("  "),
         sorted(
-            &format!("{:<width$}", "52w range", width = cohort::BAND_CELLS + 7),
-            crate::app::MegaSort::Range,
+            format!("{:<width$}", "52w range", width = dow::BAND_CELLS + 7),
+            DowSort::Range,
         ),
-        Span::styled(pad_left("off hi", MEGA_DD_WIDTH), MUTED),
-        Span::styled(pad_left("vol", MEGA_VOL_WIDTH), MUTED),
+        Span::styled(pad_left("off hi", DOW_DD_WIDTH), MUTED),
+        Span::styled(pad_left("vol", DOW_VOL_WIDTH), MUTED),
     ])
 }
 
-fn mega_row(
-    mega: &MegaCap,
+fn dow_row(
+    member: &DowStock,
     quote: Option<&Quote>,
+    divisor: Option<f64>,
     in_the_news: bool,
     selected: bool,
     width: u16,
 ) -> Line<'static> {
     let marker = if selected { "\u{25b8} " } else { "  " };
-    // One column, after the name, so the column reads down as "which of these
-    // the session is talking about".
+    // One column, after the name, so it reads down as "which of these the
+    // session is talking about".
     let news = if in_the_news { "\u{00b7}" } else { " " };
     let mut spans = vec![
         Span::raw(format!(
             "{marker}{:<width$}",
-            truncate(mega.name, MEGA_NAME_WIDTH - 2),
-            width = MEGA_NAME_WIDTH - 1
+            truncate(member.name, DOW_NAME_WIDTH - 2),
+            width = DOW_NAME_WIDTH - 1
         )),
         Span::styled(news.to_string(), HEADING),
     ];
@@ -430,30 +475,36 @@ fn mega_row(
         Some(q) => {
             let dir = if q.change_pct < 0.0 { DOWN } else { UP };
             spans.push(Span::raw(pad_left(
-                &market_cap(q.market_cap),
-                MEGA_CAP_WIDTH,
+                &crate::catalog::group_thousands(&format!("{:.2}", q.last)),
+                DOW_PRICE_WIDTH,
             )));
-            spans.push(Span::raw(pad_left(&price(q.last), MEGA_LAST_WIDTH)));
             spans.push(Span::styled(
-                pad_left(&format_percent(q.change_pct), MEGA_PCT_WIDTH),
+                pad_left(&format_percent(q.change_pct), DOW_PCT_WIDTH),
+                dir,
+            ));
+            spans.push(Span::styled(
+                pad_left(
+                    &points(divisor.and_then(|d| dow::contribution(q, d))),
+                    DOW_PTS_WIDTH,
+                ),
                 dir,
             ));
             spans.push(Span::raw("  "));
-            spans.extend(band(cohort::range_position(q)));
+            spans.extend(band(dow::range_position(q)));
             spans.push(Span::styled(
-                pad_left(&drawdown(cohort::drawdown(q)), MEGA_DD_WIDTH),
+                pad_left(&drawdown(dow::drawdown(q)), DOW_DD_WIDTH),
                 MUTED,
             ));
             spans.push(volume(q.vol_ratio));
         }
         None => {
             for w in [
-                MEGA_CAP_WIDTH,
-                MEGA_LAST_WIDTH,
-                MEGA_PCT_WIDTH,
-                cohort::BAND_CELLS + 9,
-                MEGA_DD_WIDTH,
-                MEGA_VOL_WIDTH,
+                DOW_PRICE_WIDTH,
+                DOW_PCT_WIDTH,
+                DOW_PTS_WIDTH,
+                dow::BAND_CELLS + 9,
+                DOW_DD_WIDTH,
+                DOW_VOL_WIDTH,
             ] {
                 spans.push(Span::styled(pad_left("\u{2014}", w), MUTED));
             }
@@ -468,6 +519,21 @@ fn mega_row(
     pad_to_width(Line::from(spans).style(base), width)
 }
 
+/// A member's contribution to the index, in index points.
+///
+/// Whole points: the average is five figures, so a tenth of a point is below
+/// anything a reader would act on and only costs column width.
+fn points(contribution: Option<f64>) -> String {
+    match contribution {
+        Some(pts) => format!(
+            "{}{:.0}",
+            if pts < 0.0 { "\u{2212}" } else { "+" },
+            pts.abs()
+        ),
+        None => "\u{2014}".into(),
+    }
+}
+
 /// Where the price sits in its 52-week band, as a filled gauge and a percent.
 ///
 /// Deliberately not colour-coded by direction: the band says where the name
@@ -477,34 +543,16 @@ fn mega_row(
 fn band(position: Option<f64>) -> Vec<Span<'static>> {
     let Some(position) = position else {
         return vec![Span::styled(
-            format!("{:<width$}", "\u{2014}", width = cohort::BAND_CELLS + 7),
+            format!("{:<width$}", "\u{2014}", width = dow::BAND_CELLS + 7),
             MUTED,
         )];
     };
-    let lit = cohort::band_index(position) + 1;
+    let lit = dow::band_index(position) + 1;
     vec![
         Span::styled("\u{2588}".repeat(lit), HEADING),
-        Span::styled("\u{2591}".repeat(cohort::BAND_CELLS - lit), MUTED),
-        Span::raw(format!("{:>5.0}% ", position)),
+        Span::styled("\u{2591}".repeat(dow::BAND_CELLS - lit), MUTED),
+        Span::raw(format!("{position:>5.0}% ")),
     ]
-}
-
-/// "4.88T", "948B". Two significant decimals below a trillion is noise in a
-/// column this narrow.
-fn market_cap(cap: Option<f64>) -> String {
-    let Some(cap) = cap else {
-        return "\u{2014}".into();
-    };
-    match cap {
-        c if c >= 1e12 => format!("{:.2}T", c / 1e12),
-        c if c >= 1e9 => format!("{:.0}B", c / 1e9),
-        c if c >= 1e6 => format!("{:.0}M", c / 1e6),
-        c => format!("{c:.0}"),
-    }
-}
-
-fn price(last: f64) -> String {
-    crate::catalog::group_thousands(&format!("{last:.2}"))
 }
 
 fn drawdown(dd: Option<f64>) -> String {
@@ -518,9 +566,9 @@ fn drawdown(dd: Option<f64>) -> String {
 /// worth the reader's eye, so an ordinary one stays muted.
 fn volume(ratio: Option<f64>) -> Span<'static> {
     let Some(ratio) = ratio else {
-        return Span::styled(pad_left("\u{2014}", MEGA_VOL_WIDTH), MUTED);
+        return Span::styled(pad_left("\u{2014}", DOW_VOL_WIDTH), MUTED);
     };
-    let text = pad_left(&format!("{ratio:.1}x"), MEGA_VOL_WIDTH);
+    let text = pad_left(&format!("{ratio:.1}x"), DOW_VOL_WIDTH);
     if ratio >= 1.5 {
         Span::styled(text, HEADING.add_modifier(Modifier::BOLD))
     } else {
@@ -1431,11 +1479,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let priced = app
         .quotes
         .iter()
-        .chain(app.mega_quotes.iter())
+        .chain(app.dow_quotes.iter())
         .filter(|q| q.is_some())
         .count();
     spans.push(Span::styled(
-        format!("   {priced}/{} quotes", INSTRUMENTS.len() + MEGA_CAPS.len()),
+        format!("   {priced}/{} quotes", INSTRUMENTS.len() + DOW_30.len()),
         MUTED,
     ));
     if app.active_tab == Tab::Movers && app.detail.is_none() {
@@ -1478,13 +1526,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let rows: &[(&str, &str)] = &[
-        ("1/2/3/4, Tab", "movers, board, mega caps, news"),
+        ("1/2/3/4, Tab", "movers, board, the Dow 30, news"),
         ("j / k, arrows", "move the selection, or scroll a story"),
         ("Ctrl-D / Ctrl-U", "half page down / up"),
         ("g / G, Home/End", "first / last"),
         ("h / l", "movers: previous / next card"),
         ("", "board: jump group   news: cycle section"),
-        ("", "mega caps: order by cap, range or move"),
+        ("", "dow: order by points, weight, range or move"),
         ("", "detail: switch the chart range"),
         ("Enter", "movers, board: open the detail view"),
         ("", "news: read the story, right here"),

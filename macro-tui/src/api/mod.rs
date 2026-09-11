@@ -212,7 +212,7 @@ mod tests {
 #[cfg(test)]
 mod live {
     use super::*;
-    use crate::catalog::{INSTRUMENTS, MEGA_CAPS};
+    use crate::catalog::{DOW_30, INSTRUMENTS};
 
     #[tokio::test]
     #[ignore = "hits the network"]
@@ -233,13 +233,13 @@ mod live {
         assert!(missing.is_empty(), "no price for: {missing:?}");
     }
 
-    /// The cohort rides the board's quote request, and its whole point is the
-    /// four fields the macro instruments leave null. A silent change to any
-    /// of them would empty a column rather than raise an error, so this
-    /// asserts on them by name.
+    /// The thirty ride the board's quote request, and the tab's whole point
+    /// is fields the macro instruments leave null. A silent change to any of
+    /// them would empty a column rather than raise an error, so this asserts
+    /// on them by name.
     #[tokio::test]
     #[ignore = "hits the network"]
-    async fn every_mega_cap_still_returns_the_equity_fields() {
+    async fn every_dow_member_still_returns_the_equity_fields() {
         let client = MarketClient::new();
         let quotes = client
             .get_quotes(&crate::catalog::all_symbols())
@@ -247,14 +247,14 @@ mod live {
             .expect("quote request failed");
 
         let mut missing = Vec::new();
-        for mega in MEGA_CAPS {
-            let Some(q) = quotes.get(mega.cnbc).and_then(|q| q.parse()) else {
-                missing.push(format!("{}: no price", mega.name));
+        for member in DOW_30 {
+            let Some(q) = quotes.get(member.cnbc).and_then(|q| q.parse()) else {
+                missing.push(format!("{}: no price", member.name));
                 continue;
             };
             println!(
                 "  {:<14} {:>10.2}  cap {:?}  beta {:?}  52w {:?}-{:?}  vol {:?}",
-                mega.name, q.last, q.market_cap, q.beta, q.year_low, q.year_high, q.vol_ratio
+                member.name, q.last, q.market_cap, q.beta, q.year_low, q.year_high, q.vol_ratio
             );
             for (field, present) in [
                 ("market cap", q.market_cap.is_some()),
@@ -264,30 +264,92 @@ mod live {
                 ("volume ratio", q.vol_ratio.is_some()),
             ] {
                 if !present {
-                    missing.push(format!("{}: no {field}", mega.name));
+                    missing.push(format!("{}: no {field}", member.name));
                 }
             }
         }
         assert!(missing.is_empty(), "{missing:#?}");
     }
 
-    /// The cohort's history keys go in the same batch as the board's, so one
+    /// The membership check, and the reason the table can be hardcoded.
+    ///
+    /// The Dow is price-weighted: the sum of its thirty share prices over a
+    /// divisor is the index level. So settled closes plus the index's own
+    /// close give the divisor back, and it only moves on a split or a
+    /// substitution. A member that has been replaced shifts the sum by that
+    /// company's entire share price, which is a far bigger move than any
+    /// split, and this notices.
+    ///
+    /// A failure here means the list is stale, not that the arithmetic is
+    /// wrong. Fix the membership, then update `DIVISOR_AT_REVIEW` and
+    /// `REVIEWED` together.
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn the_dow_membership_still_reproduces_the_divisor() {
+        let client = MarketClient::new();
+        let quotes = client
+            .get_quotes(&crate::catalog::all_symbols())
+            .await
+            .expect("quote request failed");
+
+        let parse = |symbol: &str| {
+            quotes
+                .get(symbol)
+                .and_then(|q| q.parse())
+                .unwrap_or_else(|| panic!("no quote for {symbol}"))
+        };
+
+        // Yesterday's closes: settled and simultaneous, unlike a live session
+        // where each member's last trade is its own instant.
+        let mut sum = 0.0;
+        for member in DOW_30 {
+            let q = parse(member.cnbc);
+            sum += q
+                .prev_close
+                .unwrap_or_else(|| panic!("no previous close for {}", member.name));
+        }
+        let index = parse(crate::app::DOW_INDEX_SYMBOL);
+        let prev_index = index.prev_close.expect("no previous close for the index");
+        let derived = sum / prev_index;
+
+        println!("  members            {}", DOW_30.len());
+        println!("  sum of closes      {sum:.2}");
+        println!("  index close        {prev_index:.2}");
+        println!("  derived divisor    {derived:.6}");
+        println!(
+            "  at last review     {:.6}",
+            crate::catalog::DIVISOR_AT_REVIEW
+        );
+
+        // A split moves the divisor by well under a percent. Losing or gaining
+        // a member moves it by that company's share of the sum, which for the
+        // cheapest member in the table is still several percent.
+        let drift =
+            (derived - crate::catalog::DIVISOR_AT_REVIEW).abs() / crate::catalog::DIVISOR_AT_REVIEW;
+        assert!(
+            drift < 0.01,
+            "divisor drifted {:.2}% from the reviewed value: the membership is probably stale",
+            drift * 100.0
+        );
+    }
+
+    /// The members' history keys go in the same batch as the board's, so one
     /// rotted stock key would take the whole board's charts down with it.
     #[tokio::test]
     #[ignore = "hits the network"]
-    async fn every_mega_cap_history_key_still_resolves() {
+    async fn every_dow_member_history_key_still_resolves() {
         let client = MarketClient::new();
-        let keys: Vec<&'static str> = MEGA_CAPS.iter().map(|m| m.history).collect();
+        let keys: Vec<&'static str> = DOW_30.iter().map(|m| m.history).collect();
         let series = client
             .get_history(&keys, "P1M")
             .await
             .expect("batched history request failed");
 
         let mut empty = Vec::new();
-        for mega in MEGA_CAPS {
-            match series.get(mega.history).filter(|s| !s.is_empty()) {
-                Some(s) => println!("  {:<14} {} points", mega.name, s.len()),
-                None => empty.push(mega.name),
+        for member in DOW_30 {
+            match series.get(member.history).filter(|s| !s.is_empty()) {
+                Some(s) => println!("  {:<14} {} points", member.name, s.len()),
+                None => empty.push(member.name),
             }
         }
         assert!(empty.is_empty(), "no history for: {empty:?}");

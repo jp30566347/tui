@@ -12,11 +12,11 @@ const APP: &str = "macro-tui";
 #[derive(Debug, Default, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Tab to open on: 1 for the movers, 2 for the board, 3 for the mega
-    /// caps, 4 for news.
+    /// Tab to open on: 1 for the movers, 2 for the board, 3 for the Dow 30,
+    /// 4 for news.
     ///
-    /// The cohort tab took slot 3 in 0.4.0, so a config written before that
-    /// opens on the mega caps where it used to open on news.
+    /// The Dow tab took slot 3 in 0.4.0, so a config written before that
+    /// opens on it where it used to open on news.
     pub tab: Option<u8>,
 }
 
