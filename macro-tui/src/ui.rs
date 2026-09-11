@@ -17,7 +17,8 @@ use crate::api::article::{Article, Block as Text};
 use crate::api::models::{Quote, Series};
 use crate::api::rss::Headline;
 use crate::app::{App, Range, Story, Tab, MOVER_THRESHOLD};
-use crate::catalog::{format_percent, Group, Instrument, INSTRUMENTS};
+use crate::catalog::{format_percent, Group, Instrument, MegaCap, INSTRUMENTS, MEGA_CAPS};
+use crate::cohort;
 use tui_common::layout::{centered_size, pad_left, pad_to_width, panel, scroll_offset, truncate};
 
 const SELECTED_BG: Color = Color::DarkGray;
@@ -93,6 +94,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         match app.active_tab {
             Tab::Movers => draw_movers(f, app, chunks[1]),
             Tab::Board => draw_board(f, app, chunks[1]),
+            Tab::MegaCaps => draw_mega_caps(f, app, chunks[1]),
             Tab::News => draw_news(f, app, chunks[1]),
         }
     }
@@ -264,6 +266,266 @@ fn ticker_row(
         Style::new()
     };
     pad_to_width(Line::from(spans).style(base), width)
+}
+
+// --- mega caps -----------------------------------------------------------
+
+/// Columns for the cohort table. The band is fixed width so every row's
+/// marker sits on the same scale and the column reads down as a distribution.
+const MEGA_NAME_WIDTH: usize = 13;
+const MEGA_CAP_WIDTH: usize = 9;
+const MEGA_LAST_WIDTH: usize = 11;
+const MEGA_PCT_WIDTH: usize = 8;
+const MEGA_DD_WIDTH: usize = 8;
+const MEGA_VOL_WIDTH: usize = 7;
+
+/// The largest US companies as one group, led by how broad the day was.
+fn draw_mega_caps(f: &mut Frame, app: &App, area: Rect) {
+    let block = panel(
+        format!(
+            " Mega caps \u{00b7} list reviewed {} ",
+            crate::catalog::REVIEWED
+        ),
+        app.mega_sort.hint(),
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.extend(breadth_lines(app));
+    lines.push(Line::from(""));
+    lines.push(mega_header(app));
+
+    let order = app.mega_order();
+    let mut selected_line = lines.len();
+    for (rank, index) in order.iter().enumerate() {
+        if rank == app.mega_selected {
+            selected_line = lines.len();
+        }
+        lines.push(mega_row(
+            &MEGA_CAPS[*index],
+            app.mega_quotes[*index].as_ref(),
+            app.mega_in_the_news(*index),
+            rank == app.mega_selected,
+            inner.width,
+        ));
+    }
+
+    let offset = scroll_offset(selected_line, inner.height as usize, lines.len());
+    f.render_widget(
+        Paragraph::new(lines[offset.min(lines.len())..].to_vec()),
+        inner,
+    );
+}
+
+/// The two lines the tab exists for.
+///
+/// Cap-weighted against equal-weighted is the whole point: when they diverge,
+/// the group's move was carried by its largest members and the average name
+/// did something else. The word at the end names that, and is left off when
+/// the gap is too small to mean anything.
+fn breadth_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(b) = app.mega_breadth() else {
+        return vec![Line::from(Span::styled(
+            "  waiting for prices\u{2026}",
+            MUTED,
+        ))];
+    };
+
+    let label = |s: &str| Span::styled(format!("  {s:<10}"), MUTED);
+    let dir = |v: f64| if v < 0.0 { DOWN } else { UP };
+
+    let mut first = vec![
+        label("breadth"),
+        Span::styled("cap-wtd ", MUTED),
+        Span::styled(format_percent(b.cap_weighted), dir(b.cap_weighted)),
+        Span::styled("   equal-wtd ", MUTED),
+        Span::styled(format_percent(b.equal_weighted), dir(b.equal_weighted)),
+    ];
+    if let Some(shape) = b.shape() {
+        first.push(Span::styled(
+            format!("   {shape}"),
+            HEADING.add_modifier(Modifier::BOLD),
+        ));
+    }
+    first.push(Span::styled(
+        format!("   {} up / {} down", b.advancing, b.declining),
+        MUTED,
+    ));
+
+    let mut second = vec![label("range")];
+    match b.median_position {
+        Some(median) => second.push(Span::raw(format!("median {median:.0}% of 52w band"))),
+        None => second.push(Span::styled("no 52-week band", MUTED)),
+    }
+    second.push(Span::styled(
+        format!(
+            "   {} of {} above {:.0}%",
+            b.near_high,
+            b.priced,
+            cohort::NEAR_HIGH
+        ),
+        MUTED,
+    ));
+    if let Some(share) = b.top_three_share {
+        second.push(Span::styled(
+            format!("   top 3 = {share:.0}% of cohort"),
+            MUTED,
+        ));
+    }
+
+    vec![Line::from(first), Line::from(second)]
+}
+
+fn mega_header(app: &App) -> Line<'static> {
+    let sorted = |s: &str, by: crate::app::MegaSort| {
+        if app.mega_sort == by {
+            Span::styled(s.to_string(), HEADING.add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled(s.to_string(), MUTED)
+        }
+    };
+    Line::from(vec![
+        Span::styled(format!("  {:<MEGA_NAME_WIDTH$}", "name"), MUTED),
+        sorted(&pad_left("cap", MEGA_CAP_WIDTH), crate::app::MegaSort::Cap),
+        Span::styled(pad_left("last", MEGA_LAST_WIDTH), MUTED),
+        sorted(
+            &pad_left("chg%", MEGA_PCT_WIDTH),
+            crate::app::MegaSort::Move,
+        ),
+        Span::raw("  "),
+        sorted(
+            &format!("{:<width$}", "52w range", width = cohort::BAND_CELLS + 7),
+            crate::app::MegaSort::Range,
+        ),
+        Span::styled(pad_left("off hi", MEGA_DD_WIDTH), MUTED),
+        Span::styled(pad_left("vol", MEGA_VOL_WIDTH), MUTED),
+    ])
+}
+
+fn mega_row(
+    mega: &MegaCap,
+    quote: Option<&Quote>,
+    in_the_news: bool,
+    selected: bool,
+    width: u16,
+) -> Line<'static> {
+    let marker = if selected { "\u{25b8} " } else { "  " };
+    // One column, after the name, so the column reads down as "which of these
+    // the session is talking about".
+    let news = if in_the_news { "\u{00b7}" } else { " " };
+    let mut spans = vec![
+        Span::raw(format!(
+            "{marker}{:<width$}",
+            truncate(mega.name, MEGA_NAME_WIDTH - 2),
+            width = MEGA_NAME_WIDTH - 1
+        )),
+        Span::styled(news.to_string(), HEADING),
+    ];
+
+    match quote {
+        Some(q) => {
+            let dir = if q.change_pct < 0.0 { DOWN } else { UP };
+            spans.push(Span::raw(pad_left(
+                &market_cap(q.market_cap),
+                MEGA_CAP_WIDTH,
+            )));
+            spans.push(Span::raw(pad_left(&price(q.last), MEGA_LAST_WIDTH)));
+            spans.push(Span::styled(
+                pad_left(&format_percent(q.change_pct), MEGA_PCT_WIDTH),
+                dir,
+            ));
+            spans.push(Span::raw("  "));
+            spans.extend(band(cohort::range_position(q)));
+            spans.push(Span::styled(
+                pad_left(&drawdown(cohort::drawdown(q)), MEGA_DD_WIDTH),
+                MUTED,
+            ));
+            spans.push(volume(q.vol_ratio));
+        }
+        None => {
+            for w in [
+                MEGA_CAP_WIDTH,
+                MEGA_LAST_WIDTH,
+                MEGA_PCT_WIDTH,
+                cohort::BAND_CELLS + 9,
+                MEGA_DD_WIDTH,
+                MEGA_VOL_WIDTH,
+            ] {
+                spans.push(Span::styled(pad_left("\u{2014}", w), MUTED));
+            }
+        }
+    }
+
+    let base = if selected {
+        Style::new().bg(SELECTED_BG)
+    } else {
+        Style::new()
+    };
+    pad_to_width(Line::from(spans).style(base), width)
+}
+
+/// Where the price sits in its 52-week band, as a filled gauge and a percent.
+///
+/// Deliberately not colour-coded by direction: the band says where the name
+/// is in its own year, which has nothing to do with today's move, and a red
+/// or green gauge would invite reading it as one. The fill carries the value
+/// on its own, so nothing here depends on being able to tell hues apart.
+fn band(position: Option<f64>) -> Vec<Span<'static>> {
+    let Some(position) = position else {
+        return vec![Span::styled(
+            format!("{:<width$}", "\u{2014}", width = cohort::BAND_CELLS + 7),
+            MUTED,
+        )];
+    };
+    let lit = cohort::band_index(position) + 1;
+    vec![
+        Span::styled("\u{2588}".repeat(lit), HEADING),
+        Span::styled("\u{2591}".repeat(cohort::BAND_CELLS - lit), MUTED),
+        Span::raw(format!("{:>5.0}% ", position)),
+    ]
+}
+
+/// "4.88T", "948B". Two significant decimals below a trillion is noise in a
+/// column this narrow.
+fn market_cap(cap: Option<f64>) -> String {
+    let Some(cap) = cap else {
+        return "\u{2014}".into();
+    };
+    match cap {
+        c if c >= 1e12 => format!("{:.2}T", c / 1e12),
+        c if c >= 1e9 => format!("{:.0}B", c / 1e9),
+        c if c >= 1e6 => format!("{:.0}M", c / 1e6),
+        c => format!("{c:.0}"),
+    }
+}
+
+fn price(last: f64) -> String {
+    crate::catalog::group_thousands(&format!("{last:.2}"))
+}
+
+fn drawdown(dd: Option<f64>) -> String {
+    match dd {
+        Some(dd) => format!("{dd:.1}"),
+        None => "\u{2014}".into(),
+    }
+}
+
+/// Today's volume against the ten-day average. Only the unusual sessions are
+/// worth the reader's eye, so an ordinary one stays muted.
+fn volume(ratio: Option<f64>) -> Span<'static> {
+    let Some(ratio) = ratio else {
+        return Span::styled(pad_left("\u{2014}", MEGA_VOL_WIDTH), MUTED);
+    };
+    let text = pad_left(&format!("{ratio:.1}x"), MEGA_VOL_WIDTH);
+    if ratio >= 1.5 {
+        Span::styled(text, HEADING.add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled(text, MUTED)
+    }
 }
 
 // --- movers --------------------------------------------------------------
@@ -1165,9 +1427,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         None => spans.push(Span::styled("No data", DOWN)),
     }
 
-    let priced = app.quotes.iter().filter(|q| q.is_some()).count();
+    // Both tables ride one request, so one count covers them.
+    let priced = app
+        .quotes
+        .iter()
+        .chain(app.mega_quotes.iter())
+        .filter(|q| q.is_some())
+        .count();
     spans.push(Span::styled(
-        format!("   {priced}/{} quotes", INSTRUMENTS.len()),
+        format!("   {priced}/{} quotes", INSTRUMENTS.len() + MEGA_CAPS.len()),
         MUTED,
     ));
     if app.active_tab == Tab::Movers && app.detail.is_none() {
@@ -1210,12 +1478,13 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let rows: &[(&str, &str)] = &[
-        ("1 / 2 / 3, Tab", "the movers, the board, the news"),
+        ("1/2/3/4, Tab", "movers, board, mega caps, news"),
         ("j / k, arrows", "move the selection, or scroll a story"),
         ("Ctrl-D / Ctrl-U", "half page down / up"),
         ("g / G, Home/End", "first / last"),
         ("h / l", "movers: previous / next card"),
         ("", "board: jump group   news: cycle section"),
+        ("", "mega caps: order by cap, range or move"),
         ("", "detail: switch the chart range"),
         ("Enter", "movers, board: open the detail view"),
         ("", "news: read the story, right here"),

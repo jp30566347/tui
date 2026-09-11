@@ -212,7 +212,7 @@ mod tests {
 #[cfg(test)]
 mod live {
     use super::*;
-    use crate::catalog::INSTRUMENTS;
+    use crate::catalog::{INSTRUMENTS, MEGA_CAPS};
 
     #[tokio::test]
     #[ignore = "hits the network"]
@@ -231,6 +231,66 @@ mod live {
             }
         }
         assert!(missing.is_empty(), "no price for: {missing:?}");
+    }
+
+    /// The cohort rides the board's quote request, and its whole point is the
+    /// four fields the macro instruments leave null. A silent change to any
+    /// of them would empty a column rather than raise an error, so this
+    /// asserts on them by name.
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn every_mega_cap_still_returns_the_equity_fields() {
+        let client = MarketClient::new();
+        let quotes = client
+            .get_quotes(&crate::catalog::all_symbols())
+            .await
+            .expect("quote request failed");
+
+        let mut missing = Vec::new();
+        for mega in MEGA_CAPS {
+            let Some(q) = quotes.get(mega.cnbc).and_then(|q| q.parse()) else {
+                missing.push(format!("{}: no price", mega.name));
+                continue;
+            };
+            println!(
+                "  {:<14} {:>10.2}  cap {:?}  beta {:?}  52w {:?}-{:?}  vol {:?}",
+                mega.name, q.last, q.market_cap, q.beta, q.year_low, q.year_high, q.vol_ratio
+            );
+            for (field, present) in [
+                ("market cap", q.market_cap.is_some()),
+                ("beta", q.beta.is_some()),
+                ("52-week high", q.year_high.is_some()),
+                ("52-week low", q.year_low.is_some()),
+                ("volume ratio", q.vol_ratio.is_some()),
+            ] {
+                if !present {
+                    missing.push(format!("{}: no {field}", mega.name));
+                }
+            }
+        }
+        assert!(missing.is_empty(), "{missing:#?}");
+    }
+
+    /// The cohort's history keys go in the same batch as the board's, so one
+    /// rotted stock key would take the whole board's charts down with it.
+    #[tokio::test]
+    #[ignore = "hits the network"]
+    async fn every_mega_cap_history_key_still_resolves() {
+        let client = MarketClient::new();
+        let keys: Vec<&'static str> = MEGA_CAPS.iter().map(|m| m.history).collect();
+        let series = client
+            .get_history(&keys, "P1M")
+            .await
+            .expect("batched history request failed");
+
+        let mut empty = Vec::new();
+        for mega in MEGA_CAPS {
+            match series.get(mega.history).filter(|s| !s.is_empty()) {
+                Some(s) => println!("  {:<14} {} points", mega.name, s.len()),
+                None => empty.push(mega.name),
+            }
+        }
+        assert!(empty.is_empty(), "no history for: {empty:?}");
     }
 
     /// The whole board's history is one batched request, and one unrecognised

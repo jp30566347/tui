@@ -44,6 +44,17 @@ pub struct RawQuote {
     /// RFC 3339 with an offset. Preferred over `last_timedate`, which is a
     /// display string in an unspecified zone.
     pub last_time: Option<String>,
+
+    // Equities carry these; the macro instruments leave them null.
+    /// Abbreviated market cap: "4.878T", "948.335B".
+    #[serde(rename = "mktcapView")]
+    pub mktcap_view: Option<String>,
+    /// A display string like the prices are: `"1.07"`, not a JSON number.
+    pub beta: Option<String>,
+    /// Today's volume as a fraction of the ten-day average, so 0.68 is a
+    /// quiet session and 2.4 a heavy one. A string, as above.
+    #[serde(rename = "pcttendayvol")]
+    pub pct_ten_day_vol: Option<String>,
 }
 
 /// A parsed row, ready to render.
@@ -61,6 +72,12 @@ pub struct Quote {
     pub year_high: Option<f64>,
     pub year_low: Option<f64>,
     pub market_status: Option<String>,
+
+    /// Market capitalisation in dollars. Only equities carry one.
+    pub market_cap: Option<f64>,
+    pub beta: Option<f64>,
+    /// Today's volume over the ten-day average volume.
+    pub vol_ratio: Option<f64>,
 }
 
 impl RawQuote {
@@ -100,6 +117,9 @@ impl RawQuote {
             year_high: number(self.yrhiprice.as_deref()),
             year_low: number(self.yrloprice.as_deref()),
             market_status: self.curmktstatus.clone(),
+            market_cap: abbreviated(self.mktcap_view.as_deref()),
+            beta: number(self.beta.as_deref()),
+            vol_ratio: number(self.pct_ten_day_vol.as_deref()),
         })
     }
 }
@@ -118,6 +138,24 @@ fn number(s: Option<&str>) -> Option<f64> {
         .filter(|c| !matches!(c, ',' | '%' | '+' | '$' | ' '))
         .collect();
     cleaned.parse().ok()
+}
+
+/// Parses an abbreviated magnitude into a plain number: "4.878T" is
+/// 4.878e12, "948.335B" is 9.48335e11, "340.413M" is 3.40413e8.
+///
+/// The quote endpoint only ever abbreviates market cap, and only for
+/// equities, so an unsuffixed string is taken at face value rather than
+/// treated as an error.
+fn abbreviated(s: Option<&str>) -> Option<f64> {
+    let s = s?.trim();
+    let (digits, scale) = match s.chars().last()? {
+        'T' | 't' => (&s[..s.len() - 1], 1e12),
+        'B' | 'b' => (&s[..s.len() - 1], 1e9),
+        'M' | 'm' => (&s[..s.len() - 1], 1e6),
+        'K' | 'k' => (&s[..s.len() - 1], 1e3),
+        _ => (s, 1.0),
+    };
+    Some(number(Some(digits))? * scale)
 }
 
 // --- MarketWatch history -------------------------------------------------
@@ -215,6 +253,18 @@ impl HistoryResponse {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn abbreviated_magnitudes_become_plain_numbers() {
+        assert_eq!(abbreviated(Some("4.878T")), Some(4.878e12));
+        assert_eq!(abbreviated(Some("948.335B")), Some(948.335e9));
+        assert_eq!(abbreviated(Some("340.413M")), Some(340.413e6));
+        // No suffix is a plain number, not an error.
+        assert_eq!(abbreviated(Some("1234")), Some(1234.0));
+        assert_eq!(abbreviated(None), None);
+        assert_eq!(abbreviated(Some("")), None);
+        assert_eq!(abbreviated(Some("n/a")), None);
+    }
+
     use super::*;
 
     fn raw(json: &str) -> RawQuote {

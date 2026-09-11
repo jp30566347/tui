@@ -322,11 +322,136 @@ pub const INSTRUMENTS: &[Instrument] = &[
     },
 ];
 
+/// One of the largest US listed companies.
+///
+/// Deliberately a separate table from `INSTRUMENTS` rather than a sixth
+/// group. The board and the movers grid are about the macro session, and a
+/// cohort of single stocks — which clear the one-percent mover threshold on
+/// most days — would crowd both out. These rows have their own tab.
+///
+/// Membership is hardcoded and reviewed by hand. An index constituent list is
+/// a licensed product, and on a weeks-to-months horizon the largest names
+/// barely change, so a static table is both cheaper and safer than deriving
+/// one. `REVIEWED` records when it was last checked.
+pub struct MegaCap {
+    pub name: &'static str,
+    /// Ticker as the CNBC quote endpoint spells it. Plain dots: `BRK.B`, not
+    /// Yahoo's `BRK-B`.
+    pub cnbc: &'static str,
+    /// MarketWatch "Charting" series key. `STOCK/<country>/<MIC>/<ticker>`;
+    /// the exchange segment resolves either populated or empty, and is filled
+    /// in here because a populated key is the one MarketWatch's own pages use.
+    pub history: &'static str,
+    /// Lowercase terms matched against headline text, as for `Instrument`.
+    /// The display name is always matched and need not be repeated.
+    pub aliases: &'static [&'static str],
+}
+
+/// When the cohort below was last reviewed against market caps.
+pub const REVIEWED: &str = "2026-09-11";
+
+pub const MEGA_CAPS: &[MegaCap] = &[
+    MegaCap {
+        name: "Nvidia",
+        cnbc: "NVDA",
+        history: "STOCK/US/XNAS/NVDA",
+        aliases: &["nvda"],
+    },
+    MegaCap {
+        name: "Apple",
+        cnbc: "AAPL",
+        history: "STOCK/US/XNAS/AAPL",
+        aliases: &["aapl", "iphone"],
+    },
+    MegaCap {
+        name: "Alphabet",
+        cnbc: "GOOGL",
+        history: "STOCK/US/XNAS/GOOGL",
+        aliases: &["googl", "google"],
+    },
+    MegaCap {
+        name: "Microsoft",
+        cnbc: "MSFT",
+        history: "STOCK/US/XNAS/MSFT",
+        aliases: &["msft"],
+    },
+    MegaCap {
+        name: "Amazon",
+        cnbc: "AMZN",
+        history: "STOCK/US/XNAS/AMZN",
+        aliases: &["amzn"],
+    },
+    MegaCap {
+        name: "Broadcom",
+        cnbc: "AVGO",
+        history: "STOCK/US/XNAS/AVGO",
+        aliases: &["avgo"],
+    },
+    MegaCap {
+        name: "Meta",
+        cnbc: "META",
+        history: "STOCK/US/XNAS/META",
+        aliases: &["meta platforms", "facebook"],
+    },
+    MegaCap {
+        name: "Tesla",
+        cnbc: "TSLA",
+        history: "STOCK/US/XNAS/TSLA",
+        aliases: &["tsla"],
+    },
+    MegaCap {
+        name: "Berkshire",
+        cnbc: "BRK.B",
+        history: "STOCK/US/XNYS/BRK.B",
+        aliases: &["berkshire hathaway", "brk"],
+    },
+    MegaCap {
+        name: "Eli Lilly",
+        cnbc: "LLY",
+        history: "STOCK/US/XNYS/LLY",
+        aliases: &["lly"],
+    },
+    MegaCap {
+        name: "JPMorgan",
+        cnbc: "JPM",
+        history: "STOCK/US/XNYS/JPM",
+        aliases: &["jpm", "jp morgan"],
+    },
+    MegaCap {
+        name: "Visa",
+        cnbc: "V",
+        history: "STOCK/US/XNYS/V",
+        aliases: &[],
+    },
+    MegaCap {
+        name: "Exxon Mobil",
+        cnbc: "XOM",
+        history: "STOCK/US/XNYS/XOM",
+        aliases: &["xom", "exxon"],
+    },
+    MegaCap {
+        name: "Mastercard",
+        cnbc: "MA",
+        history: "STOCK/US/XNYS/MA",
+        aliases: &[],
+    },
+    MegaCap {
+        name: "UnitedHealth",
+        cnbc: "UNH",
+        history: "STOCK/US/XNYS/UNH",
+        aliases: &["unh", "united health"],
+    },
+];
+
 /// The `symbols` query parameter for a single batched quote request.
+///
+/// The board and the cohort share one request. Forty-one symbols come back in
+/// about 26 KB, so splitting them would cost a round trip and buy nothing.
 pub fn all_symbols() -> String {
     INSTRUMENTS
         .iter()
         .map(|i| i.cnbc)
+        .chain(MEGA_CAPS.iter().map(|m| m.cnbc))
         .collect::<Vec<_>>()
         .join("|")
 }
@@ -367,7 +492,7 @@ pub fn format_percent(pct: f64) -> String {
 }
 
 /// Inserts thousands separators into an already-formatted decimal string.
-fn group_thousands(s: &str) -> String {
+pub fn group_thousands(s: &str) -> String {
     let (int, frac) = match s.split_once('.') {
         Some((i, f)) => (i, Some(f)),
         None => (s, None),
@@ -484,8 +609,98 @@ mod tests {
     #[test]
     fn all_symbols_joins_every_instrument_with_a_pipe() {
         let joined = all_symbols();
-        assert_eq!(joined.matches('|').count(), INSTRUMENTS.len() - 1);
+        assert_eq!(
+            joined.matches('|').count(),
+            INSTRUMENTS.len() + MEGA_CAPS.len() - 1
+        );
         assert!(joined.contains(".SPX"));
+        assert!(joined.contains("AAPL"));
+    }
+
+    /// The separator has to be percent-encoded on the wire; sent raw the
+    /// quote endpoint answers 403, which reads like a block rather than a
+    /// malformed query. A symbol containing the separator itself would split
+    /// into two unrecognised ones however the request is encoded, so that is
+    /// what this guards.
+    #[test]
+    fn no_symbol_contains_the_separator_the_batch_is_joined_with() {
+        for symbol in INSTRUMENTS
+            .iter()
+            .map(|i| i.cnbc)
+            .chain(MEGA_CAPS.iter().map(|m| m.cnbc))
+        {
+            assert!(
+                !symbol.is_empty(),
+                "an empty symbol would vanish in the join"
+            );
+            assert!(
+                !symbol.contains('|') && !symbol.contains(' '),
+                "{symbol} would not survive the batched request"
+            );
+        }
+    }
+
+    #[test]
+    fn no_mega_cap_shares_a_symbol_or_a_name_with_another() {
+        let mut symbols = HashSet::new();
+        let mut names = HashSet::new();
+        for m in MEGA_CAPS {
+            assert!(symbols.insert(m.cnbc), "duplicate symbol {}", m.cnbc);
+            assert!(names.insert(m.name), "duplicate name {}", m.name);
+        }
+    }
+
+    /// A cohort symbol colliding with a board symbol would have both rows
+    /// reading the same quote out of the response map.
+    #[test]
+    fn the_cohort_and_the_board_share_no_symbol() {
+        let board: HashSet<&str> = INSTRUMENTS.iter().map(|i| i.cnbc).collect();
+        for m in MEGA_CAPS {
+            assert!(!board.contains(m.cnbc), "{} is on both tables", m.cnbc);
+        }
+    }
+
+    #[test]
+    fn every_mega_cap_history_key_has_four_segments_and_names_a_stock() {
+        for m in MEGA_CAPS {
+            assert_eq!(
+                m.history.split('/').count(),
+                4,
+                "{} has a malformed history key: {}",
+                m.name,
+                m.history
+            );
+            assert!(
+                m.history.starts_with("STOCK/US/"),
+                "{} is not a US stock key: {}",
+                m.name,
+                m.history
+            );
+            assert!(
+                m.history.ends_with(m.cnbc),
+                "{}'s history key does not end with its ticker: {}",
+                m.name,
+                m.history
+            );
+        }
+    }
+
+    /// The cohort matches headlines with the same word-boundary matcher the
+    /// board uses, so an alias claimed twice would pull the wrong company's
+    /// news onto a row.
+    #[test]
+    fn no_alias_is_claimed_by_both_a_mega_cap_and_an_instrument() {
+        let mut seen: HashSet<&str> = INSTRUMENTS
+            .iter()
+            .flat_map(|i| i.aliases)
+            .copied()
+            .collect();
+        for m in MEGA_CAPS {
+            for a in m.aliases {
+                assert!(seen.insert(a), "alias {a:?} is claimed twice");
+                assert_eq!(*a, a.to_lowercase(), "alias {a:?} on {} is not", m.name);
+            }
+        }
     }
 
     /// `.FTSEMIB` is what every other vendor calls it, and it is what the
