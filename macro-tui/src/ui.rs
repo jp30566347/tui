@@ -16,7 +16,7 @@ use ratatui::{
 use crate::api::article::{Article, Block as Text};
 use crate::api::models::{Quote, Series};
 use crate::api::rss::Headline;
-use crate::app::{App, Range, Story, Tab};
+use crate::app::{App, Range, Story, Tab, MOVER_THRESHOLD};
 use crate::catalog::{format_percent, Group, Instrument, INSTRUMENTS};
 use tui_common::layout::{centered_size, pad_left, pad_to_width, panel, scroll_offset, truncate};
 
@@ -52,6 +52,17 @@ const SPARK_MAX: usize = 32;
 const AGE_WIDTH: usize = 4;
 const SOURCE_WIDTH: usize = 4;
 
+/// What a mover card is given when the terminal has the room.
+const CARD_IDEAL_WIDTH: u16 = 34;
+/// Past this a card is only stretched whitespace, so the grid centres its
+/// cards instead of widening them.
+const CARD_MAX_WIDTH: u16 = 44;
+/// One blank column between cards. Rows need none: their borders already
+/// separate them.
+const CARD_GAP: u16 = 1;
+/// Any more columns than this and a card is too narrow to read across.
+const MAX_COLUMNS: usize = 6;
+
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
     let chunks = Layout::default()
@@ -80,6 +91,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_detail(f, app, chunks[1]);
     } else {
         match app.active_tab {
+            Tab::Movers => draw_movers(f, app, chunks[1]),
             Tab::Board => draw_board(f, app, chunks[1]),
             Tab::News => draw_news(f, app, chunks[1]),
         }
@@ -252,6 +264,321 @@ fn ticker_row(
         Style::new()
     };
     pad_to_width(Line::from(spans).style(base), width)
+}
+
+// --- movers --------------------------------------------------------------
+
+/// The day's big moves as cards, under the one or two stories behind them.
+fn draw_movers(f: &mut Frame, app: &App, area: Rect) {
+    let movers = app.movers();
+    let block = panel(
+        format!(
+            " Movers \u{00b7} {} above {MOVER_THRESHOLD:.0}% ",
+            movers.len()
+        ),
+        " j/k/h/l \u{2195} \u{00b7} Enter detail \u{00b7} n story \u{00b7} o read \u{00b7} ? help ",
+    );
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // The strip gets its rows only once the grid has enough of its own: on a
+    // short terminal the prices are what the tab is for.
+    let (stories, label) = app.macro_headlines();
+    let slots = match inner.height {
+        h if h >= 16 => 2,
+        h if h >= 11 => 1,
+        _ => 0,
+    }
+    .min(stories.len());
+    app.news_slots.set(slots);
+
+    // A heading rule, then two rows per story.
+    let strip = if slots == 0 { 0 } else { slots as u16 * 2 + 1 };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(strip), Constraint::Min(3)])
+        .split(inner);
+
+    if slots > 0 {
+        draw_macro_strip(
+            f,
+            &stories[..slots],
+            app.movers_news_scroll,
+            label,
+            chunks[0],
+        );
+    }
+    draw_mover_grid(f, app, &movers, chunks[1]);
+}
+
+/// The stories that moved everything, above the cards that show it.
+fn draw_macro_strip(
+    f: &mut Frame,
+    stories: &[&Headline],
+    selected: usize,
+    label: &str,
+    area: Rect,
+) {
+    let width = area.width as usize;
+    let rule = format!("\u{2500} {label} ");
+    let mut lines = vec![Line::from(vec![
+        Span::styled(rule.clone(), HEADING),
+        Span::styled(
+            "\u{2500}".repeat(width.saturating_sub(rule.chars().count())),
+            MUTED,
+        ),
+    ])];
+
+    for (n, story) in stories.iter().enumerate() {
+        let picked = n == selected;
+        lines.push(pad_to_width(
+            Line::from(vec![
+                Span::raw(if picked { "\u{25b8} " } else { "  " }),
+                Span::styled(truncate(&story.title, width.saturating_sub(2)), BOLD),
+            ])
+            .style(if picked {
+                Style::new().bg(SELECTED_BG)
+            } else {
+                Style::new()
+            }),
+            area.width,
+        ));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {}",
+                truncate(&story_meta(story), width.saturating_sub(2))
+            ),
+            MUTED,
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// A story's section, age and summary, with whatever it does not have left
+/// out rather than shown as an empty field.
+fn story_meta(story: &Headline) -> String {
+    let mut parts = vec![story.source.name().to_string()];
+    let age = age(story);
+    if !age.is_empty() {
+        parts.push(format!("{age} ago"));
+    }
+    if !story.description.is_empty() {
+        parts.push(story.description.clone());
+    }
+    parts.join(" \u{00b7} ")
+}
+
+fn draw_mover_grid(f: &mut Frame, app: &App, movers: &[usize], area: Rect) {
+    // A column of clearance each side, so a card is never flush against the
+    // pane's own border.
+    let area = Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    if movers.is_empty() || area.width == 0 {
+        app.grid_columns.set(1);
+        draw_no_movers(f, app, area);
+        return;
+    }
+
+    let columns = grid_columns(area.width);
+    app.grid_columns.set(columns);
+    let card_width = (area.width.saturating_sub(CARD_GAP * (columns as u16 - 1)) / columns as u16)
+        .min(CARD_MAX_WIDTH);
+    let size = card_size(card_width, area.height);
+    let rows = (area.height / size.rows()).max(1) as usize;
+    // Page keys should move by a screenful of the grid, not of the board.
+    app.viewport_rows.set(rows);
+
+    let total = movers.len().div_ceil(columns);
+    let first = scroll_offset(app.movers_selected / columns, rows, total);
+    // Centred, so the columns a wide terminal cannot fill do not all pile up
+    // on one side of the grid.
+    let used = columns as u16 * card_width + CARD_GAP * (columns as u16 - 1);
+    let left = area.x + area.width.saturating_sub(used) / 2;
+
+    for (slot, index) in movers
+        .iter()
+        .enumerate()
+        .skip(first * columns)
+        .take(rows * columns)
+    {
+        let rect = Rect {
+            x: left + (slot % columns) as u16 * (card_width + CARD_GAP),
+            y: area.y + (slot / columns - first) as u16 * size.rows(),
+            width: card_width,
+            height: size.rows(),
+        };
+        draw_mover_card(f, app, *index, slot == app.movers_selected, size, rect);
+    }
+}
+
+/// As many ideal-width cards as the pane is nearest to fitting, so widening
+/// the terminal adds a column rather than stretching the ones it has.
+fn grid_columns(width: u16) -> usize {
+    let pitch = CARD_IDEAL_WIDTH + CARD_GAP;
+    (((width + CARD_GAP + pitch / 2) / pitch) as usize).clamp(1, MAX_COLUMNS)
+}
+
+/// How much of a card is drawn, decided by the room it has.
+///
+/// A narrow card drops the trend, then the move, rather than wrapping a
+/// number onto a second line or clipping one mid-digit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardSize {
+    /// Level and percent, the move and its group, and a month of closes.
+    Tall,
+    /// Level and percent, the move and its group.
+    Short,
+    /// Level and percent.
+    Tiny,
+}
+
+impl CardSize {
+    /// Rows on screen, borders included.
+    fn rows(self) -> u16 {
+        match self {
+            CardSize::Tall => 5,
+            CardSize::Short => 4,
+            CardSize::Tiny => 3,
+        }
+    }
+
+    fn smaller(self) -> Self {
+        match self {
+            CardSize::Tall => CardSize::Short,
+            _ => CardSize::Tiny,
+        }
+    }
+}
+
+fn card_size(card_width: u16, height: u16) -> CardSize {
+    let mut size = if card_width >= 28 {
+        CardSize::Tall
+    } else if card_width >= 22 {
+        CardSize::Short
+    } else {
+        CardSize::Tiny
+    };
+    // A card taller than the pane would leave the grid showing nothing at
+    // all. A pane with room for only one row of tall cards shows two rows of
+    // short ones instead: on a short terminal, how much of the day is on
+    // screen is worth more than the trend under each price.
+    while size != CardSize::Tiny
+        && (size.rows() > height
+            || (height / size.rows() < 2 && height / size.smaller().rows() >= 2))
+    {
+        size = size.smaller();
+    }
+    size
+}
+
+fn draw_mover_card(
+    f: &mut Frame,
+    app: &App,
+    index: usize,
+    selected: bool,
+    size: CardSize,
+    area: Rect,
+) {
+    let instrument = &INSTRUMENTS[index];
+    // Only priced rows can be movers, so this is a formality.
+    let Some(quote) = app.quotes[index].as_ref() else {
+        return;
+    };
+    let up = quote.change_pct >= 0.0;
+    let dir = if up { UP } else { DOWN };
+
+    // The name rides the top border, which buys the card a row of content.
+    // The marker takes a column the unselected cards also leave blank, so
+    // moving the cursor does not shunt every name sideways.
+    let title = format!(
+        "{} {} ",
+        if selected { "\u{25b8}" } else { " " },
+        truncate(instrument.name, area.width.saturating_sub(5) as usize)
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if selected { BOLD } else { MUTED })
+        .title(Span::styled(
+            title,
+            if selected { SELECTED_STYLE } else { BOLD },
+        ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let width = inner.width as usize;
+    let mut lines = vec![spread(
+        Span::styled(instrument.level(quote.last), BOLD),
+        Span::styled(
+            format!(
+                "{} {}",
+                if up { "\u{25b2}" } else { "\u{25bc}" },
+                format_percent(quote.change_pct)
+            ),
+            dir.add_modifier(Modifier::BOLD),
+        ),
+        width,
+    )];
+
+    if size != CardSize::Tiny {
+        lines.push(spread(
+            Span::styled(instrument.change(quote.change), dir),
+            Span::styled(instrument.group.as_str(), MUTED),
+            width,
+        ));
+    }
+    if size == CardSize::Tall {
+        let spark = instrument
+            .history
+            .and_then(|key| app.history.get(&(Range::OneMonth, key)))
+            .map(|series| sparkline(series, width))
+            .unwrap_or_default();
+        // Right-aligned, so the trend ends under the percent it explains.
+        lines.push(Line::from(Span::styled(pad_left(&spark, width), dir)));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Two spans pushed to the edges of one line. The right one is dropped rather
+/// than overlapped when the card is too narrow to hold both.
+fn spread(left: Span<'static>, right: Span<'static>, width: usize) -> Line<'static> {
+    let used = left.content.chars().count() + right.content.chars().count();
+    if used >= width {
+        return Line::from(left);
+    }
+    Line::from(vec![left, Span::raw(" ".repeat(width - used)), right])
+}
+
+/// A board with nothing over the threshold is itself the news, so the tab
+/// says so and points at the largest move there is.
+fn draw_no_movers(f: &mut Frame, app: &App, area: Rect) {
+    let mut lines = vec![Line::from(Span::styled(
+        format!("Nothing has moved more than {MOVER_THRESHOLD:.0}% today."),
+        MUTED,
+    ))];
+    match app.biggest_move().and_then(|n| {
+        app.quotes[n]
+            .as_ref()
+            .map(|q| (INSTRUMENTS[n].name, q.change_pct))
+    }) {
+        Some((name, pct)) => lines.push(Line::from(vec![
+            Span::styled("Biggest so far: ", MUTED),
+            Span::raw(name),
+            Span::raw(" "),
+            Span::styled(format_percent(pct), if pct < 0.0 { DOWN } else { UP }),
+        ])),
+        None => lines.push(Line::from(Span::styled(
+            "Waiting for the first quotes\u{2026}",
+            MUTED,
+        ))),
+    }
+    let rect = centered_size(area.width, lines.len() as u16, area);
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
 }
 
 // --- news ----------------------------------------------------------------
@@ -843,6 +1170,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         format!("   {priced}/{} quotes", INSTRUMENTS.len()),
         MUTED,
     ));
+    if app.active_tab == Tab::Movers && app.detail.is_none() {
+        spans.push(Span::styled(
+            format!("   {} movers", app.movers().len()),
+            MUTED,
+        ));
+    }
     spans.push(Span::styled(
         format!("   {} headlines", app.headlines.len()),
         MUTED,
@@ -877,15 +1210,17 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help_overlay(f: &mut Frame, area: Rect) {
     let rows: &[(&str, &str)] = &[
-        ("1 / 2, Tab", "switch between the board and news"),
+        ("1 / 2 / 3, Tab", "the movers, the board, the news"),
         ("j / k, arrows", "move the selection, or scroll a story"),
         ("Ctrl-D / Ctrl-U", "half page down / up"),
-        ("g / G, Home/End", "first / last row"),
-        ("h / l", "board: jump group   news: cycle section"),
+        ("g / G, Home/End", "first / last"),
+        ("h / l", "movers: previous / next card"),
+        ("", "board: jump group   news: cycle section"),
         ("", "detail: switch the chart range"),
-        ("Enter", "board: open the detail view"),
+        ("Enter", "movers, board: open the detail view"),
         ("", "news: read the story, right here"),
-        ("n / N", "scroll the board's news rail"),
+        ("n / N", "movers: pick one of the macro stories"),
+        ("", "board: scroll the news rail"),
         ("f", "rail: matched headlines or the whole pool"),
         ("o", "read the selected story"),
         ("c", "copy the story as an image, ready to paste in a post"),
@@ -1004,6 +1339,65 @@ mod tests {
     #[test]
     fn wrap_counts_characters_not_bytes() {
         assert_eq!(wrap("caf\u{e9} au lait", 7), vec!["caf\u{e9} au", "lait"]);
+    }
+
+    #[test]
+    fn the_grid_adds_a_column_as_the_terminal_widens() {
+        assert_eq!(grid_columns(40), 1);
+        assert_eq!(grid_columns(60), 2);
+        assert_eq!(grid_columns(100), 3);
+        assert_eq!(grid_columns(160), 5);
+        assert_eq!(grid_columns(400), MAX_COLUMNS, "cards stop multiplying");
+        assert_eq!(grid_columns(0), 1, "there is always one column");
+    }
+
+    #[test]
+    fn a_card_drops_the_trend_then_the_move_as_it_narrows() {
+        assert_eq!(card_size(34, 20), CardSize::Tall);
+        assert_eq!(card_size(24, 20), CardSize::Short);
+        assert_eq!(card_size(18, 20), CardSize::Tiny);
+    }
+
+    /// A card taller than its pane would leave the grid blank.
+    #[test]
+    fn a_card_is_never_taller_than_the_pane_it_sits_in() {
+        assert_eq!(card_size(34, 4), CardSize::Short);
+        assert_eq!(card_size(34, 3), CardSize::Tiny);
+        assert_eq!(card_size(34, 1), CardSize::Tiny);
+    }
+
+    /// Nine rows hold one tall card and four wasted lines, or two short ones.
+    #[test]
+    fn a_short_pane_trades_the_trend_for_a_second_row_of_cards() {
+        assert_eq!(card_size(34, 9), CardSize::Short);
+        assert_eq!(card_size(34, 10), CardSize::Tall);
+        // Seven rows hold one card either way, so it keeps its trend.
+        assert_eq!(card_size(34, 7), CardSize::Tall);
+    }
+
+    #[test]
+    fn spread_pushes_two_values_apart_and_drops_the_second_when_both_will_not_fit() {
+        assert_eq!(
+            spread(Span::raw("a"), Span::raw("b"), 6).to_string(),
+            "a    b"
+        );
+        assert_eq!(
+            spread(Span::raw("abc"), Span::raw("def"), 6).to_string(),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn a_macro_story_with_no_date_or_summary_shows_no_empty_fields() {
+        let headline = Headline {
+            title: "Payrolls rose".into(),
+            link: "https://www.cnbc.com/x".into(),
+            description: String::new(),
+            published: None,
+            source: crate::api::rss::Source::Top,
+            haystack: String::new(),
+        };
+        assert_eq!(story_meta(&headline), "Top news");
     }
 
     #[test]

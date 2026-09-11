@@ -27,17 +27,57 @@ const NEWS_TTL: Duration = Duration::from_secs(300);
 /// is refreshed rarely.
 const HISTORY_TTL: Duration = Duration::from_secs(900);
 
+/// How far an instrument has to move, in percent, before the Movers tab
+/// carries it. A day's ordinary drift is a few tenths; a percent is the point
+/// at which a move is worth a card of its own.
+pub const MOVER_THRESHOLD: f64 = 1.0;
+
+/// At most this many macro stories sit above the cards. Two is what a session
+/// has: the data release, and whatever the policy story of the day is.
+pub const MACRO_HEADLINES: usize = 2;
+
+/// Terms that mark a story as macro: the releases and policy events that move
+/// the whole board rather than one row of it.
+const MACRO_TERMS: &[&str] = &[
+    "payrolls",
+    "nonfarm",
+    "jobs report",
+    "jobless claims",
+    "unemployment",
+    "job openings",
+    "hiring",
+    "cpi",
+    "inflation",
+    "ppi",
+    "pce",
+    "gdp",
+    "retail sales",
+    "fed",
+    "fomc",
+    "powell",
+    "rate cut",
+    "rate hike",
+    "interest rates",
+    "ecb",
+    "boj",
+    "tariff",
+    "tariffs",
+    "recession",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    Movers,
     Board,
     News,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 2] = [Tab::Board, Tab::News];
+    pub const ALL: [Tab; 3] = [Tab::Movers, Tab::Board, Tab::News];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Tab::Movers => "Movers",
             Tab::Board => "Board",
             Tab::News => "News",
         }
@@ -160,6 +200,11 @@ pub struct App {
     pub history_bad: HashSet<&'static str>,
 
     pub board_selected: usize,
+    /// Which mover card the cursor is on, as an index into `movers()` rather
+    /// than into the catalog: the list is reordered by every refresh.
+    pub movers_selected: usize,
+    /// Which of the macro stories above the cards is picked.
+    pub movers_news_scroll: usize,
     pub news_scroll: usize,
     pub rail_scroll: usize,
     pub detail_news_scroll: usize,
@@ -173,6 +218,12 @@ pub struct App {
     /// Rows the content pane last rendered. Written by the UI so page keys
     /// move by an actual screenful; a `Cell` because drawing only borrows.
     pub viewport_rows: Cell<usize>,
+    /// Cards the mover grid last fitted across the pane, so `j` and `k` move
+    /// by a row of a grid whose width only the renderer knows.
+    pub grid_columns: Cell<usize>,
+    /// Macro stories the Movers tab last had room for. The cursor cannot
+    /// leave what is actually on screen.
+    pub news_slots: Cell<usize>,
     /// How far the reader can scroll, as the UI last wrapped the story. The
     /// count depends on the pane width, which only the renderer knows.
     pub reader_max_scroll: Cell<usize>,
@@ -194,7 +245,7 @@ impl App {
     pub fn new(tab: usize) -> Self {
         Self {
             should_quit: false,
-            active_tab: Tab::from_index(tab).unwrap_or(Tab::Board),
+            active_tab: Tab::from_index(tab).unwrap_or(Tab::Movers),
             detail: None,
             range: Range::OneMonth,
             reader: None,
@@ -204,6 +255,8 @@ impl App {
             history: HashMap::new(),
             history_bad: HashSet::new(),
             board_selected: 0,
+            movers_selected: 0,
+            movers_news_scroll: 0,
             news_scroll: 0,
             rail_scroll: 0,
             detail_news_scroll: 0,
@@ -211,6 +264,8 @@ impl App {
             rail_all: false,
             show_help: false,
             viewport_rows: Cell::new(20),
+            grid_columns: Cell::new(1),
+            news_slots: Cell::new(MACRO_HEADLINES),
             reader_max_scroll: Cell::new(0),
             notice: None,
             loading: false,
@@ -224,12 +279,73 @@ impl App {
     }
 
     /// The instrument the news panes are keyed to: the one under the detail
-    /// view when it is open, otherwise the board selection.
+    /// view when it is open, otherwise whatever the front tab has selected.
     pub fn focused(&self) -> &'static Instrument {
-        &INSTRUMENTS[self
-            .detail
-            .unwrap_or(self.board_selected)
-            .min(INSTRUMENTS.len() - 1)]
+        let at = match (self.detail, self.active_tab) {
+            (Some(n), _) => n,
+            (None, Tab::Movers) => self.selected_mover().unwrap_or(self.board_selected),
+            (None, _) => self.board_selected,
+        };
+        &INSTRUMENTS[at.min(INSTRUMENTS.len() - 1)]
+    }
+
+    // --- movers ----------------------------------------------------------
+
+    /// The board rows whose move clears the threshold, biggest first.
+    pub fn movers(&self) -> Vec<usize> {
+        self.ranked()
+            .into_iter()
+            .take_while(|n| self.change_pct(*n).abs() > MOVER_THRESHOLD)
+            .collect()
+    }
+
+    /// Every priced row by the size of its move, biggest first. Ties keep
+    /// catalog order, so a quiet board still reads in its usual grouping.
+    fn ranked(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = (0..INSTRUMENTS.len())
+            .filter(|n| self.quotes[*n].is_some())
+            .collect();
+        rows.sort_by(|a, b| {
+            self.change_pct(*b)
+                .abs()
+                .total_cmp(&self.change_pct(*a).abs())
+        });
+        rows
+    }
+
+    fn change_pct(&self, n: usize) -> f64 {
+        self.quotes[n].as_ref().map_or(0.0, |q| q.change_pct)
+    }
+
+    /// The largest move on the board whatever its size. A day with nothing
+    /// over the threshold is itself worth saying, and saying where it was
+    /// closest beats an empty pane.
+    pub fn biggest_move(&self) -> Option<usize> {
+        self.ranked().into_iter().next()
+    }
+
+    /// The catalog row the selected card points at.
+    pub fn selected_mover(&self) -> Option<usize> {
+        self.movers().get(self.movers_selected).copied()
+    }
+
+    /// The one or two stories that move the whole board rather than one row
+    /// of it, with a label saying whether they are really macro.
+    ///
+    /// Ranked rather than filtered, so a session whose pool holds one
+    /// payrolls story and nothing else macro still fills the second slot
+    /// instead of leaving half the strip blank. The sort is stable, so the
+    /// newest story wins inside a tier.
+    pub fn macro_headlines(&self) -> (Vec<&Headline>, &'static str) {
+        let mut ranked: Vec<(u8, &Headline)> =
+            self.headlines.iter().map(|h| (macro_rank(h), h)).collect();
+        ranked.sort_by_key(|(rank, _)| *rank);
+        ranked.truncate(MACRO_HEADLINES);
+        let label = match ranked.first() {
+            Some((rank, _)) if *rank < NOT_MACRO => "Macro",
+            _ => "Top news",
+        };
+        (ranked.into_iter().map(|(_, h)| h).collect(), label)
     }
 
     // --- fetching --------------------------------------------------------
@@ -552,8 +668,9 @@ impl App {
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('r') => return Some(Action::ForceRefresh),
 
-            KeyCode::Char('1') => self.active_tab = Tab::Board,
-            KeyCode::Char('2') => self.active_tab = Tab::News,
+            KeyCode::Char('1') => self.active_tab = Tab::Movers,
+            KeyCode::Char('2') => self.active_tab = Tab::Board,
+            KeyCode::Char('3') => self.active_tab = Tab::News,
             KeyCode::Tab => self.active_tab = self.active_tab.next(),
             KeyCode::BackTab => self.active_tab = self.active_tab.prev(),
 
@@ -567,28 +684,30 @@ impl App {
             // Context-dependent, the way the reference app steps dates on one
             // tab and cycles filters on another.
             KeyCode::Char('l') | KeyCode::Right => match self.active_tab {
+                Tab::Movers => self.move_card(1),
                 Tab::Board => self.jump_group(1),
                 Tab::News => self.cycle_news_filter(1),
             },
             KeyCode::Char('h') | KeyCode::Left => match self.active_tab {
+                Tab::Movers => self.move_card(-1),
                 Tab::Board => self.jump_group(-1),
                 Tab::News => self.cycle_news_filter(-1),
             },
 
-            KeyCode::Char('n') => self.rail_scroll = self.rail_scroll.saturating_add(1),
-            KeyCode::Char('N') => self.rail_scroll = self.rail_scroll.saturating_sub(1),
+            KeyCode::Char('n') => self.cycle_story(1),
+            KeyCode::Char('N') => self.cycle_story(-1),
             KeyCode::Char('f') if self.active_tab == Tab::Board => {
                 self.rail_all = !self.rail_all;
                 self.rail_scroll = 0;
             }
 
             KeyCode::Enter => match self.active_tab {
-                Tab::Board => {
-                    self.detail = Some(self.board_selected);
-                    self.detail_news_scroll = 0;
-                    // The long range is only fetched when it is asked for.
-                    return Some(Action::Refresh);
+                Tab::Movers => {
+                    if let Some(n) = self.selected_mover() {
+                        return self.open_detail(n);
+                    }
                 }
+                Tab::Board => return self.open_detail(self.board_selected),
                 Tab::News => return self.open_selected_story(),
             },
             KeyCode::Char('o') => return self.open_selected_story(),
@@ -672,17 +791,27 @@ impl App {
     }
 
     /// The headline under the cursor of whichever list is in front: the
-    /// detail view's, the News tab's, or the board's rail.
+    /// detail view's, the News tab's, the Movers tab's macro strip, or the
+    /// board's rail.
     fn selected_headline(&self) -> Option<Headline> {
         let (list, at) = if self.detail.is_some() {
             (self.related_headlines().0, self.detail_news_scroll)
         } else {
             match self.active_tab {
+                Tab::Movers => (self.macro_headlines().0, self.movers_news_scroll),
                 Tab::News => (self.filtered_headlines(), self.news_scroll),
                 Tab::Board => (self.related_headlines().0, self.rail_scroll),
             }
         };
         list.get(at).map(|h| (*h).clone())
+    }
+
+    /// Opens the detail view on a catalog row. The long chart range is only
+    /// fetched once something asks for it, which is here.
+    fn open_detail(&mut self, index: usize) -> Option<Action> {
+        self.detail = Some(index);
+        self.detail_news_scroll = 0;
+        Some(Action::Refresh)
     }
 
     fn open_selected_story(&mut self) -> Option<Action> {
@@ -801,7 +930,10 @@ impl App {
             return;
         }
         match self.active_tab {
-            Tab::Board => self.set_selection(self.board_selected as isize + delta),
+            // A step down the grid is a whole row of cards, so the cursor
+            // lands under the one it left rather than beside it.
+            Tab::Movers => self.move_card(delta * self.grid_columns.get().max(1) as isize),
+            Tab::Board => self.set_board_selection(self.board_selected as isize + delta),
             Tab::News => {
                 let max = self.filtered_headlines().len().saturating_sub(1) as isize;
                 self.news_scroll =
@@ -810,7 +942,49 @@ impl App {
         }
     }
 
+    /// One card left or right, which on the grid's edges is also the step
+    /// from the end of a row to the start of the next.
+    fn move_card(&mut self, delta: isize) {
+        let max = self.movers().len().saturating_sub(1) as isize;
+        self.movers_selected = (self.movers_selected as isize)
+            .saturating_add(delta)
+            .clamp(0, max.max(0)) as usize;
+    }
+
+    /// `n` steps the story cursor of whichever news pane is showing: the
+    /// Movers tab's macro strip, or the board's rail.
+    fn cycle_story(&mut self, step: isize) {
+        if self.active_tab == Tab::Movers && self.detail.is_none() {
+            let max = self.shown_macro_headlines().saturating_sub(1) as isize;
+            self.movers_news_scroll =
+                (self.movers_news_scroll as isize + step).clamp(0, max.max(0)) as usize;
+        } else {
+            self.rail_scroll = (self.rail_scroll as isize + step).max(0) as usize;
+        }
+    }
+
+    /// Macro stories the last frame actually drew. A short terminal gets one
+    /// where a tall one gets two, and the cursor may not point past it.
+    fn shown_macro_headlines(&self) -> usize {
+        self.news_slots.get().min(self.macro_headlines().0.len())
+    }
+
+    /// `g` and `G`: the ends of whichever list is in front.
     fn set_selection(&mut self, to: isize) {
+        match self.active_tab {
+            Tab::Movers => {
+                let max = self.movers().len().saturating_sub(1) as isize;
+                self.movers_selected = to.clamp(0, max.max(0)) as usize;
+            }
+            Tab::Board => self.set_board_selection(to),
+            Tab::News => {
+                let max = self.filtered_headlines().len().saturating_sub(1) as isize;
+                self.news_scroll = to.clamp(0, max.max(0)) as usize;
+            }
+        }
+    }
+
+    fn set_board_selection(&mut self, to: isize) {
         let max = INSTRUMENTS.len() as isize - 1;
         self.board_selected = to.clamp(0, max) as usize;
         // The rail is keyed to the selection, so a new selection starts at the
@@ -826,7 +1000,7 @@ impl App {
         let target =
             Group::ALL[(at as isize + step).rem_euclid(Group::ALL.len() as isize) as usize];
         if let Some(n) = INSTRUMENTS.iter().position(|i| i.group == target) {
-            self.set_selection(n as isize);
+            self.set_board_selection(n as isize);
         }
     }
 
@@ -843,6 +1017,14 @@ impl App {
     /// Keeps every cursor on a row that still exists.
     fn clamp_scroll(&mut self) {
         self.board_selected = self.board_selected.min(INSTRUMENTS.len().saturating_sub(1));
+        // The mover list is rebuilt by every refresh and can shrink to
+        // nothing between two frames.
+        self.movers_selected = self
+            .movers_selected
+            .min(self.movers().len().saturating_sub(1));
+        self.movers_news_scroll = self
+            .movers_news_scroll
+            .min(self.shown_macro_headlines().saturating_sub(1));
         self.news_scroll = self
             .news_scroll
             .min(self.filtered_headlines().len().saturating_sub(1));
@@ -918,6 +1100,26 @@ fn canonical_link(link: &str) -> String {
     link.split(['?', '#']).next().unwrap_or(link).to_lowercase()
 }
 
+/// The rank of a story that is about nothing on the macro list.
+const NOT_MACRO: u8 = 2;
+
+/// How squarely a story is about the macro picture: the headline itself says
+/// so, only its summary does, or neither.
+///
+/// The tiers are the difference between a story about the payrolls number and
+/// a story about one borrower that mentions the Fed in passing. Both belong
+/// in the news pool; only the first belongs over the day's movers.
+fn macro_rank(headline: &Headline) -> u8 {
+    let is_macro = |text: &str| MACRO_TERMS.iter().any(|t| contains_word(text, t));
+    if is_macro(&headline.title.to_lowercase()) {
+        0
+    } else if is_macro(&headline.haystack) {
+        1
+    } else {
+        NOT_MACRO
+    }
+}
+
 /// Whether a headline's haystack mentions an instrument by name or alias.
 fn mentions(haystack: &str, instrument: &Instrument) -> bool {
     contains_word(haystack, &instrument.name.to_lowercase())
@@ -969,8 +1171,29 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
+    /// The board, which most of these tests are about. The app itself opens
+    /// on the Movers tab.
     fn app() -> App {
-        App::new(0)
+        App::new(Tab::Board.index())
+    }
+
+    /// Puts a percent move on a named instrument and returns its catalog row.
+    fn with_move(a: &mut App, name: &str, pct: f64) -> usize {
+        let n = INSTRUMENTS.iter().position(|i| i.name == name).unwrap();
+        a.quotes[n] = Some(quote(100.0 + pct, pct));
+        n
+    }
+
+    /// The Movers tab over a board with four moves on it, two of them big
+    /// enough to get a card.
+    fn movers_app() -> App {
+        let mut a = App::new(Tab::Movers.index());
+        with_move(&mut a, "Gold", 2.4);
+        with_move(&mut a, "Silver", -3.1);
+        with_move(&mut a, "VIX", 1.9);
+        with_move(&mut a, "Copper", -1.2);
+        with_move(&mut a, "S&P 500", 0.4);
+        a
     }
 
     fn headline(title: &str, link: &str, ts: &str, source: Source) -> Headline {
@@ -1653,8 +1876,253 @@ mod tests {
 
     #[test]
     fn tabs_cycle_in_both_directions() {
+        assert_eq!(Tab::Movers.next(), Tab::Board);
         assert_eq!(Tab::Board.next(), Tab::News);
-        assert_eq!(Tab::News.next(), Tab::Board);
-        assert_eq!(Tab::Board.prev(), Tab::News);
+        assert_eq!(Tab::News.next(), Tab::Movers);
+        assert_eq!(Tab::Movers.prev(), Tab::News);
+    }
+
+    #[test]
+    fn the_app_opens_on_the_movers_tab() {
+        assert_eq!(App::new(0).active_tab, Tab::Movers);
+    }
+
+    #[test]
+    fn the_number_keys_reach_all_three_tabs() {
+        let mut a = app();
+        a.handle_key(key('3'));
+        assert_eq!(a.active_tab, Tab::News);
+        a.handle_key(key('1'));
+        assert_eq!(a.active_tab, Tab::Movers);
+        a.handle_key(key('2'));
+        assert_eq!(a.active_tab, Tab::Board);
+    }
+
+    /// The whole point of the tab: a quiet row does not get a card, and a row
+    /// sitting exactly on the threshold has not cleared it.
+    #[test]
+    fn only_moves_over_the_threshold_get_a_card() {
+        let mut a = movers_app();
+        with_move(&mut a, "Brent crude", MOVER_THRESHOLD);
+        let names: Vec<&str> = a.movers().iter().map(|n| INSTRUMENTS[*n].name).collect();
+        assert_eq!(names, vec!["Silver", "Gold", "VIX", "Copper"]);
+    }
+
+    #[test]
+    fn cards_are_ordered_by_the_size_of_the_move_whichever_way_it_went() {
+        let a = movers_app();
+        let first = INSTRUMENTS[a.movers()[0]].name;
+        assert_eq!(first, "Silver", "the biggest move is a fall");
+        assert_eq!(
+            a.biggest_move().map(|n| INSTRUMENTS[n].name),
+            Some("Silver")
+        );
+    }
+
+    /// With nothing over the threshold the tab still has something to say.
+    #[test]
+    fn a_quiet_board_has_no_cards_but_still_has_a_biggest_move() {
+        let mut a = App::new(Tab::Movers.index());
+        with_move(&mut a, "Gold", 0.42);
+        with_move(&mut a, "S&P 500", -0.1);
+        assert!(a.movers().is_empty());
+        assert_eq!(a.biggest_move().map(|n| INSTRUMENTS[n].name), Some("Gold"));
+    }
+
+    #[test]
+    fn an_unpriced_board_has_no_biggest_move_at_all() {
+        assert_eq!(App::new(Tab::Movers.index()).biggest_move(), None);
+    }
+
+    #[test]
+    fn h_and_l_step_one_card_and_j_and_k_step_a_whole_grid_row() {
+        let mut a = movers_app();
+        a.grid_columns.set(2);
+        a.handle_key(key('l'));
+        assert_eq!(a.movers_selected, 1);
+        a.handle_key(key('j'));
+        assert_eq!(a.movers_selected, 3);
+        a.handle_key(key('k'));
+        assert_eq!(a.movers_selected, 1);
+        a.handle_key(key('h'));
+        assert_eq!(a.movers_selected, 0);
+        a.handle_key(key('h'));
+        assert_eq!(a.movers_selected, 0, "the cursor stops at the first card");
+        a.handle_key(key('G'));
+        assert_eq!(a.movers_selected, 3);
+        a.handle_key(key('j'));
+        assert_eq!(a.movers_selected, 3, "and at the last");
+        a.handle_key(key('g'));
+        assert_eq!(a.movers_selected, 0);
+    }
+
+    #[test]
+    fn enter_on_a_card_opens_that_instruments_detail_view() {
+        let mut a = movers_app();
+        a.handle_key(key('l'));
+        assert!(matches!(
+            a.handle_key(code(KeyCode::Enter)),
+            Some(Action::Refresh)
+        ));
+        assert_eq!(a.detail, INSTRUMENTS.iter().position(|i| i.name == "Gold"));
+        a.handle_key(code(KeyCode::Esc));
+        assert_eq!(a.active_tab, Tab::Movers);
+    }
+
+    #[test]
+    fn the_selected_card_is_the_instrument_the_movers_tab_calls_focused() {
+        let mut a = movers_app();
+        assert_eq!(a.focused().name, "Silver");
+        a.handle_key(key('l'));
+        assert_eq!(a.focused().name, "Gold");
+    }
+
+    /// A refresh rebuilds the list, and a card the cursor was on can leave it.
+    #[test]
+    fn the_card_cursor_is_clamped_when_a_refresh_leaves_fewer_movers() {
+        let mut a = movers_app();
+        a.movers_selected = 3;
+        with_move(&mut a, "VIX", 0.2);
+        with_move(&mut a, "Copper", -0.3);
+        a.clamp_scroll();
+        assert_eq!(a.movers_selected, 1);
+    }
+
+    fn macro_pool() -> Vec<Headline> {
+        vec![
+            headline(
+                "Chipmaker beats estimates",
+                "https://e.com/chips",
+                "Fri, 04 Sep 2026 14:00:00 GMT",
+                Source::Finance,
+            ),
+            headline(
+                "U.S. payrolls rose 162,000 in August",
+                "https://e.com/jobs",
+                "Fri, 04 Sep 2026 13:00:00 GMT",
+                Source::Economy,
+            ),
+            headline(
+                "Fed holds rates steady",
+                "https://e.com/fed",
+                "Fri, 04 Sep 2026 12:00:00 GMT",
+                Source::Top,
+            ),
+            headline(
+                "Inflation cooled in August",
+                "https://e.com/cpi",
+                "Fri, 04 Sep 2026 11:00:00 GMT",
+                Source::Economy,
+            ),
+        ]
+    }
+
+    /// The strip is for the releases that move the whole board, not for the
+    /// newest thing in the pool.
+    #[test]
+    fn the_macro_strip_prefers_a_data_release_over_a_company_story() {
+        let mut a = App::new(Tab::Movers.index());
+        a.headlines = macro_pool();
+        let (picked, label) = a.macro_headlines();
+        assert_eq!(label, "Macro");
+        assert_eq!(picked.len(), MACRO_HEADLINES);
+        assert!(
+            picked[0].title.contains("payrolls"),
+            "got {:?}",
+            picked[0].title
+        );
+        assert!(picked[1].title.contains("Fed"), "got {:?}", picked[1].title);
+    }
+
+    /// A story about one borrower that nods at the Fed in its summary is not
+    /// what the strip is for, however new it is.
+    #[test]
+    fn a_story_that_only_mentions_the_data_in_passing_ranks_below_one_about_it() {
+        let mut a = App::new(Tab::Movers.index());
+        let passing = Headline {
+            title: "Private credit borrowers are feeling the squeeze".into(),
+            link: "https://e.com/credit".into(),
+            description: "Investors weigh what the Fed does next.".into(),
+            published: DateTime::parse_from_rfc2822("Fri, 04 Sep 2026 15:00:00 GMT")
+                .ok()
+                .map(|d| d.with_timezone(&Utc)),
+            source: Source::Finance,
+            haystack: "private credit borrowers are feeling the squeeze investors weigh what the fed does next.".into(),
+        };
+        a.headlines = vec![
+            passing,
+            headline(
+                "U.S. payrolls rose 162,000 in August",
+                "https://e.com/jobs",
+                "Fri, 04 Sep 2026 13:00:00 GMT",
+                Source::Economy,
+            ),
+        ];
+        let (picked, label) = a.macro_headlines();
+        assert_eq!(label, "Macro");
+        assert!(
+            picked[0].title.contains("payrolls"),
+            "got {:?}",
+            picked[0].title
+        );
+        assert!(
+            picked[1].title.contains("credit"),
+            "the second slot is filled rather than left blank"
+        );
+    }
+
+    #[test]
+    fn a_pool_with_nothing_macro_in_it_falls_back_to_the_newest_headlines() {
+        let mut a = App::new(Tab::Movers.index());
+        a.headlines = vec![headline(
+            "Chipmaker beats estimates",
+            "https://e.com/chips",
+            "Fri, 04 Sep 2026 14:00:00 GMT",
+            Source::Finance,
+        )];
+        let (picked, label) = a.macro_headlines();
+        assert_eq!(label, "Top news");
+        assert_eq!(picked.len(), 1);
+    }
+
+    #[test]
+    fn n_picks_a_macro_story_and_o_reads_the_one_it_is_on() {
+        let mut a = App::new(Tab::Movers.index());
+        a.headlines = macro_pool();
+        a.news_slots.set(2);
+        a.handle_key(key('n'));
+        assert_eq!(a.movers_news_scroll, 1);
+        match a.handle_key(key('o')) {
+            Some(Action::FetchStory(link)) => assert_eq!(link, "https://e.com/fed"),
+            other => panic!("expected a FetchStory action, got {other:?}"),
+        }
+        a.reader = None;
+        a.handle_key(key('N'));
+        assert_eq!(a.movers_news_scroll, 0);
+    }
+
+    /// A short terminal draws one story, so the cursor may not point at a
+    /// second one the reader cannot see.
+    #[test]
+    fn the_story_cursor_stays_inside_what_the_terminal_had_room_for() {
+        let mut a = App::new(Tab::Movers.index());
+        a.headlines = macro_pool();
+        a.news_slots.set(1);
+        a.handle_key(key('n'));
+        assert_eq!(a.movers_news_scroll, 0);
+    }
+
+    /// `n` still belongs to the board's rail everywhere else.
+    #[test]
+    fn n_scrolls_the_rail_on_the_board() {
+        let mut a = app();
+        a.headlines = macro_pool();
+        a.rail_all = true;
+        a.handle_key(key('n'));
+        assert_eq!(a.rail_scroll, 1);
+        a.handle_key(key('N'));
+        assert_eq!(a.rail_scroll, 0);
+        a.handle_key(key('N'));
+        assert_eq!(a.rail_scroll, 0);
     }
 }
