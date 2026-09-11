@@ -19,6 +19,12 @@ chart plus the headlines that mention it. Pick a headline and read the whole
 story without leaving the terminal, or turn it into an image ready to paste
 into a post.
 
+There is also the Dow tab, which takes an instrument already on the board and
+shows what is inside it: the thirty companies in the average, and what each
+one added to or took off the index today in index points. The board says the
+Dow rose 583. This says Caterpillar alone was 101 of that, and UnitedHealth
+cost it 59.
+
 No API key, no signup, no configuration. It works the moment it starts.
 
 ![macro-tui: the movers, the board, a detail chart and the news rail](../docs/macro-tui/demo.gif)
@@ -56,8 +62,52 @@ source.
 | `Esc` | close the story, the detail view or an overlay. Never quits |
 | `q`, `Ctrl-C` | quit |
 
-`macro-tui --list-symbols` prints the board. `--tab 2` starts on the board and
-`--tab 3` on the news, and `--save-config` remembers it.
+`macro-tui --list-symbols` prints the board. `--tab` picks the starting tab —
+1 movers, 2 board, 3 the Dow 30, 4 news — and `--save-config` remembers it.
+The Dow tab took slot 3 in 0.4.0, so a config written before that now opens on
+it where it used to open on news.
+
+## The Dow 30
+
+The board carries the Dow Jones Industrial Average as one row. This tab is
+that row taken apart.
+
+The average is price-weighted, and that is the fact the whole tab turns on. A
+member's effect on the index depends on its share price and nothing else: an
+$800 stock moves the Dow roughly eight times as far as a $100 one on the same
+percentage move, whatever the two companies are worth. So the `pts` column is
+what each name added to or took off the index today, in index points, and the
+thirty add up to the move the board shows.
+
+The divisor that converts share prices into index points is not hardcoded. It
+is recovered each refresh from yesterday's settled closes and the index's own
+close, which is possible precisely because the average is a sum over a
+constant. Yesterday's prices are used rather than today's because they are
+simultaneous: during a session the index ticks continuously while each
+member's last trade is its own instant, and that skew would wobble the figure.
+
+That derivation doubles as a check on the membership list, which is hardcoded.
+The divisor only moves on a split or a substitution, and a member that has
+been replaced shifts the sum by that company's entire share price, which is a
+much larger move than a split. If the derived divisor has drifted from the
+value recorded when the list was last reviewed, the tab says so on screen and
+the live test fails with the same complaint. The panel title carries the
+review date.
+
+Above the table, the day's move price-weighted beside the same day with every
+member counted once. When they diverge the index was carried by its dearest
+names, the ones price weighting gives the most say, and the tab says so in a
+word. The threshold for saying it is not zero, because two weightings of the
+same thirty names differ by basis points on almost any day and calling that
+"narrow" would make the word worthless.
+
+Each row then shows where that name sits in its own 52-week band as a filled
+bar, how far it is below that high, and today's volume against its ten-day
+average. The bar fills to the position rather than colouring by direction, so
+it reads without being able to tell red from green, and so it is not mistaken
+for a statement about today's move, which it is not. `h` and `l` reorder the
+table by points, by share price, by position in the band, or by percentage
+move. A dot beside a name means a headline in the pool mentions it.
 
 ## The day's movers
 

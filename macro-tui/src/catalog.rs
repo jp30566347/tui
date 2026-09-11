@@ -322,11 +322,244 @@ pub const INSTRUMENTS: &[Instrument] = &[
     },
 ];
 
+/// One of the thirty companies in the Dow Jones Industrial Average.
+///
+/// Deliberately a separate table from `INSTRUMENTS` rather than a sixth
+/// group. The board and the movers grid are about the macro session, and
+/// thirty single stocks — most of which clear the one-percent mover threshold
+/// on a busy day — would crowd both out. These rows have their own tab.
+///
+/// Membership is hardcoded and reviewed by hand. The average changes members
+/// a few times a decade, so a static table costs nothing and avoids depending
+/// on a constituent feed. `REVIEWED` records when it was last checked.
+///
+/// There is a cheap check that the list is still right, and the tab runs it
+/// every refresh: the average is price-weighted, so the sum of these thirty
+/// closes divided by the index level is the Dow divisor. A wrong or missing
+/// member moves that number, and the divisor only changes on a split or a
+/// substitution. See `dow::divisor`.
+pub struct DowStock {
+    pub name: &'static str,
+    /// Ticker as the CNBC quote endpoint spells it.
+    pub cnbc: &'static str,
+    /// MarketWatch "Charting" series key. `STOCK/<country>/<MIC>/<ticker>`.
+    pub history: &'static str,
+    /// Lowercase terms matched against headline text, as for `Instrument`.
+    /// The display name is always matched and need not be repeated.
+    pub aliases: &'static [&'static str],
+}
+
+/// When the membership below was last checked against the index.
+pub const REVIEWED: &str = "2026-09-11";
+
+/// The Dow divisor on the day the membership was last reviewed.
+///
+/// The average is the sum of its members' share prices over this number, so
+/// it is recoverable from settled closes and the index level, and it only
+/// changes on a split or a substitution. That makes it a check on the table
+/// above: a wrong or missing member shifts the sum by that company's whole
+/// share price, which moves the derived divisor by far more than a split
+/// would. `api::live::the_dow_membership_still_reproduces_the_divisor`
+/// asserts on it.
+///
+/// If that test fails, check the membership first. Only once the thirty are
+/// confirmed correct should this number and `REVIEWED` be updated together.
+pub const DIVISOR_AT_REVIEW: f64 = 0.16282;
+
+/// The thirty, in alphabetical order. The tab sorts them itself, so the order
+/// here is only the one a reader of this file would want.
+pub const DOW_30: &[DowStock] = &[
+    DowStock {
+        name: "3M",
+        cnbc: "MMM",
+        history: "STOCK/US/XNYS/MMM",
+        aliases: &["mmm"],
+    },
+    DowStock {
+        name: "Amazon",
+        cnbc: "AMZN",
+        history: "STOCK/US/XNAS/AMZN",
+        aliases: &["amzn"],
+    },
+    DowStock {
+        name: "American Express",
+        cnbc: "AXP",
+        history: "STOCK/US/XNYS/AXP",
+        aliases: &["amex", "axp"],
+    },
+    DowStock {
+        name: "Amgen",
+        cnbc: "AMGN",
+        history: "STOCK/US/XNAS/AMGN",
+        aliases: &["amgn"],
+    },
+    DowStock {
+        name: "Apple",
+        cnbc: "AAPL",
+        history: "STOCK/US/XNAS/AAPL",
+        aliases: &["aapl", "iphone"],
+    },
+    DowStock {
+        name: "Boeing",
+        cnbc: "BA",
+        history: "STOCK/US/XNYS/BA",
+        aliases: &[],
+    },
+    DowStock {
+        name: "Caterpillar",
+        cnbc: "CAT",
+        history: "STOCK/US/XNYS/CAT",
+        aliases: &["cat"],
+    },
+    DowStock {
+        name: "Chevron",
+        cnbc: "CVX",
+        history: "STOCK/US/XNYS/CVX",
+        aliases: &["cvx"],
+    },
+    DowStock {
+        name: "Cisco",
+        cnbc: "CSCO",
+        history: "STOCK/US/XNAS/CSCO",
+        aliases: &["csco"],
+    },
+    DowStock {
+        name: "Coca-Cola",
+        cnbc: "KO",
+        history: "STOCK/US/XNYS/KO",
+        aliases: &["coca cola", "coke"],
+    },
+    DowStock {
+        name: "Disney",
+        cnbc: "DIS",
+        history: "STOCK/US/XNYS/DIS",
+        aliases: &["walt disney"],
+    },
+    DowStock {
+        name: "Goldman Sachs",
+        cnbc: "GS",
+        history: "STOCK/US/XNYS/GS",
+        aliases: &["goldman", "gs"],
+    },
+    DowStock {
+        name: "Home Depot",
+        cnbc: "HD",
+        history: "STOCK/US/XNYS/HD",
+        aliases: &["hd"],
+    },
+    DowStock {
+        name: "Honeywell",
+        cnbc: "HON",
+        history: "STOCK/US/XNAS/HON",
+        aliases: &["hon"],
+    },
+    DowStock {
+        name: "IBM",
+        cnbc: "IBM",
+        history: "STOCK/US/XNYS/IBM",
+        aliases: &[],
+    },
+    DowStock {
+        name: "JPMorgan",
+        cnbc: "JPM",
+        history: "STOCK/US/XNYS/JPM",
+        aliases: &["jpm", "jp morgan"],
+    },
+    DowStock {
+        name: "Johnson & Johnson",
+        cnbc: "JNJ",
+        history: "STOCK/US/XNYS/JNJ",
+        aliases: &["jnj", "j&j"],
+    },
+    DowStock {
+        name: "McDonald's",
+        cnbc: "MCD",
+        history: "STOCK/US/XNYS/MCD",
+        aliases: &["mcdonalds", "mcd"],
+    },
+    DowStock {
+        name: "Merck",
+        cnbc: "MRK",
+        history: "STOCK/US/XNYS/MRK",
+        aliases: &["mrk"],
+    },
+    DowStock {
+        name: "Microsoft",
+        cnbc: "MSFT",
+        history: "STOCK/US/XNAS/MSFT",
+        aliases: &["msft"],
+    },
+    DowStock {
+        name: "Nike",
+        cnbc: "NKE",
+        history: "STOCK/US/XNYS/NKE",
+        aliases: &["nke"],
+    },
+    DowStock {
+        name: "Nvidia",
+        cnbc: "NVDA",
+        history: "STOCK/US/XNAS/NVDA",
+        aliases: &["nvda"],
+    },
+    DowStock {
+        name: "Procter & Gamble",
+        cnbc: "PG",
+        history: "STOCK/US/XNYS/PG",
+        aliases: &["procter", "p&g"],
+    },
+    DowStock {
+        name: "Salesforce",
+        cnbc: "CRM",
+        history: "STOCK/US/XNYS/CRM",
+        aliases: &["crm"],
+    },
+    DowStock {
+        name: "Sherwin-Williams",
+        cnbc: "SHW",
+        history: "STOCK/US/XNYS/SHW",
+        aliases: &["sherwin", "shw"],
+    },
+    DowStock {
+        name: "Travelers",
+        cnbc: "TRV",
+        history: "STOCK/US/XNYS/TRV",
+        aliases: &["trv"],
+    },
+    DowStock {
+        name: "UnitedHealth",
+        cnbc: "UNH",
+        history: "STOCK/US/XNYS/UNH",
+        aliases: &["unh", "united health"],
+    },
+    DowStock {
+        name: "Verizon",
+        cnbc: "VZ",
+        history: "STOCK/US/XNYS/VZ",
+        aliases: &["vz"],
+    },
+    DowStock {
+        name: "Visa",
+        cnbc: "V",
+        history: "STOCK/US/XNYS/V",
+        aliases: &[],
+    },
+    DowStock {
+        name: "Walmart",
+        cnbc: "WMT",
+        history: "STOCK/US/XNAS/WMT",
+        aliases: &["wmt"],
+    },
+];
+
 /// The `symbols` query parameter for a single batched quote request.
+///
+/// The board and the thirty share one request. Fifty-six symbols come back in
+/// about 50 KB, so splitting them would cost a round trip and buy nothing.
 pub fn all_symbols() -> String {
     INSTRUMENTS
         .iter()
         .map(|i| i.cnbc)
+        .chain(DOW_30.iter().map(|m| m.cnbc))
         .collect::<Vec<_>>()
         .join("|")
 }
@@ -367,7 +600,7 @@ pub fn format_percent(pct: f64) -> String {
 }
 
 /// Inserts thousands separators into an already-formatted decimal string.
-fn group_thousands(s: &str) -> String {
+pub fn group_thousands(s: &str) -> String {
     let (int, frac) = match s.split_once('.') {
         Some((i, f)) => (i, Some(f)),
         None => (s, None),
@@ -484,8 +717,116 @@ mod tests {
     #[test]
     fn all_symbols_joins_every_instrument_with_a_pipe() {
         let joined = all_symbols();
-        assert_eq!(joined.matches('|').count(), INSTRUMENTS.len() - 1);
+        assert_eq!(
+            joined.matches('|').count(),
+            INSTRUMENTS.len() + DOW_30.len() - 1
+        );
         assert!(joined.contains(".SPX"));
+        assert!(joined.contains("AAPL"));
+    }
+
+    /// The separator has to be percent-encoded on the wire; sent raw the
+    /// quote endpoint answers 403, which reads like a block rather than a
+    /// malformed query. A symbol containing the separator itself would split
+    /// into two unrecognised ones however the request is encoded, so that is
+    /// what this guards.
+    #[test]
+    fn no_symbol_contains_the_separator_the_batch_is_joined_with() {
+        for symbol in INSTRUMENTS
+            .iter()
+            .map(|i| i.cnbc)
+            .chain(DOW_30.iter().map(|m| m.cnbc))
+        {
+            assert!(
+                !symbol.is_empty(),
+                "an empty symbol would vanish in the join"
+            );
+            assert!(
+                !symbol.contains('|') && !symbol.contains(' '),
+                "{symbol} would not survive the batched request"
+            );
+        }
+    }
+
+    /// Thirty is not a detail: the whole price-weighted arithmetic, and the
+    /// divisor check that guards the membership, assume the full set.
+    #[test]
+    fn the_average_has_exactly_thirty_members() {
+        assert_eq!(DOW_30.len(), 30);
+    }
+
+    /// The index the tab reconciles against has to actually be on the board.
+    #[test]
+    fn the_dow_index_symbol_is_a_catalog_row() {
+        assert!(
+            INSTRUMENTS
+                .iter()
+                .any(|i| i.cnbc == crate::app::DOW_INDEX_SYMBOL),
+            "the Dow tab reconciles against a symbol the board does not carry"
+        );
+    }
+
+    #[test]
+    fn no_dow_stock_shares_a_symbol_or_a_name_with_another() {
+        let mut symbols = HashSet::new();
+        let mut names = HashSet::new();
+        for m in DOW_30 {
+            assert!(symbols.insert(m.cnbc), "duplicate symbol {}", m.cnbc);
+            assert!(names.insert(m.name), "duplicate name {}", m.name);
+        }
+    }
+
+    /// A member's symbol colliding with a board symbol would have both rows
+    /// reading the same quote out of the response map.
+    #[test]
+    fn the_members_and_the_board_share_no_symbol() {
+        let board: HashSet<&str> = INSTRUMENTS.iter().map(|i| i.cnbc).collect();
+        for m in DOW_30 {
+            assert!(!board.contains(m.cnbc), "{} is on both tables", m.cnbc);
+        }
+    }
+
+    #[test]
+    fn every_dow_stock_history_key_has_four_segments_and_names_a_stock() {
+        for m in DOW_30 {
+            assert_eq!(
+                m.history.split('/').count(),
+                4,
+                "{} has a malformed history key: {}",
+                m.name,
+                m.history
+            );
+            assert!(
+                m.history.starts_with("STOCK/US/"),
+                "{} is not a US stock key: {}",
+                m.name,
+                m.history
+            );
+            assert!(
+                m.history.ends_with(m.cnbc),
+                "{}'s history key does not end with its ticker: {}",
+                m.name,
+                m.history
+            );
+        }
+    }
+
+    /// The members match headlines with the same word-boundary matcher the
+    /// board uses, so an alias claimed twice would pull the wrong company's
+    /// news onto a row.
+    #[test]
+    fn no_alias_is_claimed_by_both_a_dow_stock_and_an_instrument() {
+        let mut seen: HashSet<&str> = INSTRUMENTS
+            .iter()
+            .flat_map(|i| i.aliases)
+            .copied()
+            .collect();
+        for m in DOW_30 {
+            for a in m.aliases {
+                assert!(seen.insert(a), "alias {a:?} is claimed twice");
+                assert_eq!(*a, a.to_lowercase(), "alias {a:?} on {} is not", m.name);
+            }
+        }
     }
 
     /// `.FTSEMIB` is what every other vendor calls it, and it is what the

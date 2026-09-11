@@ -5,6 +5,7 @@
 //! testable without a terminal or a network.
 
 use std::cell::Cell;
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,8 @@ use crate::api::models::{Quote, Series};
 use crate::api::rss::{Headline, Source};
 use crate::api::MarketClient;
 use crate::card::{self, Card, Ticker};
-use crate::catalog::{self, format_percent, Group, Instrument, INSTRUMENTS};
+use crate::catalog::{self, format_percent, Group, Instrument, DOW_30, INSTRUMENTS};
+use crate::dow;
 use tui_common::layout::cycle;
 
 /// How long news stays fresh before a tick will refetch it.
@@ -69,16 +71,83 @@ const MACRO_TERMS: &[&str] = &[
 pub enum Tab {
     Movers,
     Board,
+    Dow,
     News,
 }
 
+/// How the Dow tab orders its rows.
+///
+/// Four orders because each answers a different question: what moved the
+/// index, what can move it most, where a name sits in its own year, and what
+/// it did in its own terms.
+/// The board row the Dow tab reconciles against. The average's own quote is
+/// what makes the divisor recoverable and the contributions checkable.
+pub const DOW_INDEX_SYMBOL: &str = ".DJI";
+
+/// How far a quote's price moved today in absolute dollars. Ranking by this
+/// ranks by index points, since every member shares one divisor.
+fn swing(quote: &Quote) -> f64 {
+    quote
+        .prev_close
+        .map_or(0.0, |prev| (quote.last - prev).abs())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DowSort {
+    /// Biggest contribution to today's index move first, by absolute points.
+    /// The default, because it is the tab's whole subject.
+    Points,
+    /// Highest share price first, which in a price-weighted average is the
+    /// same thing as most index weight.
+    Weight,
+    /// Highest in its own 52-week band first.
+    Range,
+    /// Biggest percentage move today first.
+    Move,
+}
+
+impl DowSort {
+    pub const ALL: [DowSort; 4] = [
+        DowSort::Points,
+        DowSort::Weight,
+        DowSort::Range,
+        DowSort::Move,
+    ];
+
+    /// The panel's bottom hint, naming the order currently in force.
+    ///
+    /// One string per variant rather than a `format!`, because the block's
+    /// hint borrows for the program's life.
+    pub fn hint(self) -> &'static str {
+        match self {
+            DowSort::Points => {
+                " j/k \u{2195} \u{00b7} h/l sort: points \u{00b7} r refresh \u{00b7} ? help "
+            }
+            DowSort::Weight => {
+                " j/k \u{2195} \u{00b7} h/l sort: weight \u{00b7} r refresh \u{00b7} ? help "
+            }
+            DowSort::Range => {
+                " j/k \u{2195} \u{00b7} h/l sort: range \u{00b7} r refresh \u{00b7} ? help "
+            }
+            DowSort::Move => {
+                " j/k \u{2195} \u{00b7} h/l sort: move \u{00b7} r refresh \u{00b7} ? help "
+            }
+        }
+    }
+
+    fn step(self, delta: isize) -> Self {
+        cycle(&Self::ALL, self, delta)
+    }
+}
+
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Movers, Tab::Board, Tab::News];
+    pub const ALL: [Tab; 4] = [Tab::Movers, Tab::Board, Tab::Dow, Tab::News];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Tab::Movers => "Movers",
             Tab::Board => "Board",
+            Tab::Dow => "Dow 30",
             Tab::News => "News",
         }
     }
@@ -192,6 +261,8 @@ pub struct App {
     /// Parallel to `INSTRUMENTS`. `None` means never fetched, or the endpoint
     /// did not recognise the symbol.
     pub quotes: Vec<Option<Quote>>,
+    /// Parallel to `DOW_30`, filled from the same quote response.
+    pub dow_quotes: Vec<Option<Quote>>,
     /// Merged across feeds, deduplicated, newest first.
     pub headlines: Vec<Headline>,
     pub history: HashMap<(Range, &'static str), Series>,
@@ -200,6 +271,10 @@ pub struct App {
     pub history_bad: HashSet<&'static str>,
 
     pub board_selected: usize,
+    /// Which cohort row the cursor is on, as an index into the sorted order
+    /// the tab renders rather than into `DOW_30`.
+    pub dow_selected: usize,
+    pub dow_sort: DowSort,
     /// Which mover card the cursor is on, as an index into `movers()` rather
     /// than into the catalog: the list is reordered by every refresh.
     pub movers_selected: usize,
@@ -251,10 +326,13 @@ impl App {
             reader: None,
             stories: HashMap::new(),
             quotes: vec![None; INSTRUMENTS.len()],
+            dow_quotes: vec![None; DOW_30.len()],
             headlines: Vec::new(),
             history: HashMap::new(),
             history_bad: HashSet::new(),
             board_selected: 0,
+            dow_selected: 0,
+            dow_sort: DowSort::Points,
             movers_selected: 0,
             movers_news_scroll: 0,
             news_scroll: 0,
@@ -297,6 +375,85 @@ impl App {
             .into_iter()
             .take_while(|n| self.change_pct(*n).abs() > MOVER_THRESHOLD)
             .collect()
+    }
+
+    // --- mega-cap cohort -------------------------------------------------
+
+    /// Cohort rows in the order the tab draws them, as indices into
+    /// `DOW_30`.
+    ///
+    /// Unpriced names sink to the bottom in catalog order rather than being
+    /// dropped: the tab's shape has to be stable across refreshes or the
+    /// cursor would wander onto a different company mid-session.
+    pub fn dow_order(&self) -> Vec<usize> {
+        let mut rows: Vec<usize> = (0..DOW_30.len()).collect();
+        let sort = self.dow_sort;
+        rows.sort_by(|a, b| {
+            let (qa, qb) = (self.dow_quotes[*a].as_ref(), self.dow_quotes[*b].as_ref());
+            match (qa, qb) {
+                (Some(qa), Some(qb)) => match sort {
+                    // The divisor is the same for every row, so ranking by
+                    // price change ranks by index points without needing it.
+                    DowSort::Points => swing(qb).total_cmp(&swing(qa)),
+                    DowSort::Weight => qb.last.total_cmp(&qa.last),
+                    DowSort::Range => dow::range_position(qb)
+                        .unwrap_or(-1.0)
+                        .total_cmp(&dow::range_position(qa).unwrap_or(-1.0)),
+                    DowSort::Move => qb.change_pct.abs().total_cmp(&qa.change_pct.abs()),
+                },
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            }
+            .then(a.cmp(b))
+        });
+        rows
+    }
+
+    /// The Dow's own quote, off the board, for the divisor and the header.
+    ///
+    /// Looked up by symbol rather than by a remembered index, so reordering
+    /// the catalog cannot silently point this at a different instrument.
+    pub fn dow_index_quote(&self) -> Option<&Quote> {
+        let n = INSTRUMENTS
+            .iter()
+            .position(|i| i.cnbc == DOW_INDEX_SYMBOL)?;
+        self.quotes[n].as_ref()
+    }
+
+    /// The divisor that turns member prices into index points, or `None`
+    /// until every one of the thirty has a previous close.
+    pub fn dow_divisor(&self) -> Option<f64> {
+        dow::divisor(&self.dow_quotes, self.dow_index_quote()?)
+    }
+
+    /// Whether any headline in the pool names this company.
+    ///
+    /// The tab has no room for a news pane, so this is the whole of the "why"
+    /// it can offer: a marker saying the session has a story about this name,
+    /// and the News tab is where to read it.
+    pub fn dow_in_the_news(&self, index: usize) -> bool {
+        let mega = &DOW_30[index];
+        self.headlines
+            .iter()
+            .any(|h| named(&h.haystack, mega.name, mega.aliases))
+    }
+
+    /// The cohort taken as one group, or `None` before any of it is priced.
+    pub fn dow_session(&self) -> Option<dow::Session> {
+        dow::session(&self.dow_quotes)
+    }
+
+    fn set_dow_selection(&mut self, to: isize) {
+        let max = DOW_30.len().saturating_sub(1) as isize;
+        self.dow_selected = to.clamp(0, max.max(0)) as usize;
+    }
+
+    fn cycle_dow_sort(&mut self, delta: isize) {
+        self.dow_sort = self.dow_sort.step(delta);
+        // The row under the cursor has moved, so the cursor goes back to the
+        // top rather than following a name it was never pointing at.
+        self.dow_selected = 0;
     }
 
     /// Every priced row by the size of its move, biggest first. Ties keep
@@ -381,6 +538,7 @@ impl App {
         let keys: Vec<&'static str> = INSTRUMENTS
             .iter()
             .filter_map(|i| i.history)
+            .chain(DOW_30.iter().map(|m| m.history))
             .filter(|k| !self.history_bad.contains(k))
             .collect();
 
@@ -472,6 +630,11 @@ impl App {
                     for (n, instrument) in INSTRUMENTS.iter().enumerate() {
                         if let Some(q) = quotes.get(instrument.cnbc) {
                             self.quotes[n] = Some(q.clone());
+                        }
+                    }
+                    for (n, mega) in DOW_30.iter().enumerate() {
+                        if let Some(q) = quotes.get(mega.cnbc) {
+                            self.dow_quotes[n] = Some(q.clone());
                         }
                     }
                     self.last_updated = Some(Local::now());
@@ -670,7 +833,8 @@ impl App {
 
             KeyCode::Char('1') => self.active_tab = Tab::Movers,
             KeyCode::Char('2') => self.active_tab = Tab::Board,
-            KeyCode::Char('3') => self.active_tab = Tab::News,
+            KeyCode::Char('3') => self.active_tab = Tab::Dow,
+            KeyCode::Char('4') => self.active_tab = Tab::News,
             KeyCode::Tab => self.active_tab = self.active_tab.next(),
             KeyCode::BackTab => self.active_tab = self.active_tab.prev(),
 
@@ -686,11 +850,13 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => match self.active_tab {
                 Tab::Movers => self.move_card(1),
                 Tab::Board => self.jump_group(1),
+                Tab::Dow => self.cycle_dow_sort(1),
                 Tab::News => self.cycle_news_filter(1),
             },
             KeyCode::Char('h') | KeyCode::Left => match self.active_tab {
                 Tab::Movers => self.move_card(-1),
                 Tab::Board => self.jump_group(-1),
+                Tab::Dow => self.cycle_dow_sort(-1),
                 Tab::News => self.cycle_news_filter(-1),
             },
 
@@ -708,6 +874,10 @@ impl App {
                     }
                 }
                 Tab::Board => return self.open_detail(self.board_selected),
+                // The detail view charts a catalog row, and a cohort row is
+                // not one. Nothing to open rather than a view that would have
+                // to be half built.
+                Tab::Dow => {}
                 Tab::News => return self.open_selected_story(),
             },
             KeyCode::Char('o') => return self.open_selected_story(),
@@ -801,6 +971,9 @@ impl App {
                 Tab::Movers => (self.macro_headlines().0, self.movers_news_scroll),
                 Tab::News => (self.filtered_headlines(), self.news_scroll),
                 Tab::Board => (self.related_headlines().0, self.rail_scroll),
+                // No news pane on the cohort tab, so nothing is under the
+                // cursor for `o` or `c` to act on.
+                Tab::Dow => (Vec::new(), 0),
             }
         };
         list.get(at).map(|h| (*h).clone())
@@ -934,6 +1107,7 @@ impl App {
             // lands under the one it left rather than beside it.
             Tab::Movers => self.move_card(delta * self.grid_columns.get().max(1) as isize),
             Tab::Board => self.set_board_selection(self.board_selected as isize + delta),
+            Tab::Dow => self.set_dow_selection(self.dow_selected as isize + delta),
             Tab::News => {
                 let max = self.filtered_headlines().len().saturating_sub(1) as isize;
                 self.news_scroll =
@@ -977,6 +1151,7 @@ impl App {
                 self.movers_selected = to.clamp(0, max.max(0)) as usize;
             }
             Tab::Board => self.set_board_selection(to),
+            Tab::Dow => self.set_dow_selection(to),
             Tab::News => {
                 let max = self.filtered_headlines().len().saturating_sub(1) as isize;
                 self.news_scroll = to.clamp(0, max.max(0)) as usize;
@@ -1122,11 +1297,14 @@ fn macro_rank(headline: &Headline) -> u8 {
 
 /// Whether a headline's haystack mentions an instrument by name or alias.
 fn mentions(haystack: &str, instrument: &Instrument) -> bool {
-    contains_word(haystack, &instrument.name.to_lowercase())
-        || instrument
-            .aliases
-            .iter()
-            .any(|alias| contains_word(haystack, alias))
+    named(haystack, instrument.name, instrument.aliases)
+}
+
+/// The same test against a bare name and alias list, so the cohort table can
+/// use it without inventing a second matcher that could drift from this one.
+fn named(haystack: &str, name: &str, aliases: &[&str]) -> bool {
+    contains_word(haystack, &name.to_lowercase())
+        || aliases.iter().any(|alias| contains_word(haystack, alias))
 }
 
 /// Substring match that will not fire inside a longer word.
@@ -1410,6 +1588,9 @@ mod tests {
                     year_high: None,
                     year_low: None,
                     market_status: None,
+                    market_cap: None,
+                    beta: None,
+                    vol_ratio: None,
                 },
             )]))),
             news: None,
@@ -1435,6 +1616,9 @@ mod tests {
             year_high: None,
             year_low: None,
             market_status: None,
+            market_cap: None,
+            beta: None,
+            vol_ratio: None,
         };
         // Deliberately not in catalog order.
         a.apply_fetch(Fetched {
@@ -1468,6 +1652,9 @@ mod tests {
             year_high: None,
             year_low: None,
             market_status: None,
+            market_cap: None,
+            beta: None,
+            vol_ratio: None,
         });
         a.apply_fetch(Fetched {
             request_id: a.request_id,
@@ -1733,6 +1920,9 @@ mod tests {
             year_high: None,
             year_low: None,
             market_status: None,
+            market_cap: None,
+            beta: None,
+            vol_ratio: None,
         }
     }
 
@@ -1877,7 +2067,8 @@ mod tests {
     #[test]
     fn tabs_cycle_in_both_directions() {
         assert_eq!(Tab::Movers.next(), Tab::Board);
-        assert_eq!(Tab::Board.next(), Tab::News);
+        assert_eq!(Tab::Board.next(), Tab::Dow);
+        assert_eq!(Tab::Dow.next(), Tab::News);
         assert_eq!(Tab::News.next(), Tab::Movers);
         assert_eq!(Tab::Movers.prev(), Tab::News);
     }
@@ -1888,14 +2079,17 @@ mod tests {
     }
 
     #[test]
-    fn the_number_keys_reach_all_three_tabs() {
+    fn the_number_keys_reach_every_tab() {
         let mut a = app();
-        a.handle_key(key('3'));
-        assert_eq!(a.active_tab, Tab::News);
-        a.handle_key(key('1'));
-        assert_eq!(a.active_tab, Tab::Movers);
-        a.handle_key(key('2'));
-        assert_eq!(a.active_tab, Tab::Board);
+        for (k, tab) in [
+            ('4', Tab::News),
+            ('1', Tab::Movers),
+            ('3', Tab::Dow),
+            ('2', Tab::Board),
+        ] {
+            a.handle_key(key(k));
+            assert_eq!(a.active_tab, tab, "key {k}");
+        }
     }
 
     /// The whole point of the tab: a quiet row does not get a card, and a row
