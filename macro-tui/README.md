@@ -6,7 +6,8 @@ A macro market overview and the news moving it, in your terminal.
 
 It opens on the day's movers: only the instruments that have gone more than a
 percent, each as a card carrying its price, its move and a month of daily
-closes, with the one or two macro stories behind the session over them. The
+closes, under a row of cards for the three macro stories behind the session,
+each headed by its topic and showing its headline in full. The
 grid reflows to the terminal, from five cards across on a wide one down to a
 single column, and a card drops its trend rather than clipping a price when
 the space runs out.
@@ -49,12 +50,12 @@ source.
 | Key | Action |
 |---|---|
 | `1` `2` `3`, `Tab` | the movers, the board, the news |
-| `j` `k`, arrows | move the selection, a whole row at a time on the movers grid |
+| `j` `k`, arrows | move the selection, a whole row at a time on the movers grid. `k` from its top row goes up to the stories, `j` back down |
 | `Ctrl-D` `Ctrl-U` | half page down / up |
 | `g` `G`, Home/End | first / last |
-| `h` `l` | movers: previous / next card. board: jump group. news: cycle section. detail: switch chart range |
-| `Enter` | movers, board: open the detail view. news: read the story |
-| `n` `N` | movers: pick one of the macro stories. board: scroll the news rail |
+| `h` `l` | movers: previous / next card or story. board: jump group. news: cycle section. detail: switch chart range |
+| `Enter` | movers, board: open the detail view. movers stories, news: read the story |
+| `n` `N` | movers: step through the stories. board: scroll the news rail |
 | `f` | rail: matched headlines, or the whole pool |
 | `o` | read the selected story |
 | `c` | copy the selected story as an image, for a post |
