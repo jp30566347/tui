@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Record the two demo GIFs on the docs site, and a poster frame for each.
 #
-#   docs/scripts/record-demos.sh
+#   docs/scripts/record-demos.sh             # both
+#   docs/scripts/record-demos.sh macro-tui   # just one
 #
 # Both apps are driven for real: the binaries run in a pty against the live
 # feeds, so what the GIF shows is what the app draws. drive.py types the keys
@@ -60,7 +61,8 @@ record() {
     "$(du -h "$docs/$app/demo.gif" | cut -f1)"
 }
 
-record macro-tui 112 32
-record nhl-tui 108 28 --team NYR
+only=${1:-}
+if [ -z "$only" ] || [ "$only" = macro-tui ]; then record macro-tui 112 32; fi
+if [ -z "$only" ] || [ "$only" = nhl-tui ]; then record nhl-tui 108 28 --team NYR; fi
 
 echo "done"
