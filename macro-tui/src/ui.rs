@@ -16,7 +16,7 @@ use ratatui::{
 use crate::api::article::{Article, Block as Text};
 use crate::api::models::{Quote, Series};
 use crate::api::rss::Headline;
-use crate::app::{App, DowSort, Range, Story, Tab, MOVER_THRESHOLD};
+use crate::app::{topic, App, DowSort, Range, Story, Tab, MACRO_HEADLINES, MOVER_THRESHOLD};
 use crate::catalog::{format_percent, DowStock, Group, Instrument, DOW_30, INSTRUMENTS};
 use crate::dow;
 use tui_common::layout::{centered_size, pad_left, pad_to_width, panel, scroll_offset, truncate};
@@ -578,7 +578,7 @@ fn volume(ratio: Option<f64>) -> Span<'static> {
 
 // --- movers --------------------------------------------------------------
 
-/// The day's big moves as cards, under the one or two stories behind them.
+/// The day's big moves as cards, under the stories behind them.
 fn draw_movers(f: &mut Frame, app: &App, area: Rect) {
     let movers = app.movers();
     let block = panel(
@@ -586,94 +586,144 @@ fn draw_movers(f: &mut Frame, app: &App, area: Rect) {
             " Movers \u{00b7} {} above {MOVER_THRESHOLD:.0}% ",
             movers.len()
         ),
-        " j/k/h/l \u{2195} \u{00b7} Enter detail \u{00b7} n story \u{00b7} o read \u{00b7} ? help ",
+        if app.movers_on_news {
+            " h/l story \u{00b7} j cards \u{00b7} Enter read \u{00b7} c card \u{00b7} ? help "
+        } else {
+            " j/k/h/l \u{2195} \u{00b7} k news \u{00b7} Enter detail \u{00b7} ? help "
+        },
     );
     let inner = block.inner(area);
     f.render_widget(block, area);
+    // Spanning exactly the grid's cards, so the two rows line up.
+    // The grid keeps a column of clearance each side.
+    let width = inner.width.saturating_sub(2);
+    let (left, span) = if movers.is_empty() {
+        (0, width)
+    } else {
+        grid_span(width)
+    };
+    let row = Rect {
+        x: inner.x + 1 + left,
+        width: span,
+        ..inner
+    };
 
-    // The strip gets its rows only once the grid has enough of its own: on a
-    // short terminal the prices are what the tab is for.
-    let (stories, label) = app.macro_headlines();
-    let slots = match inner.height {
-        h if h >= 16 => 2,
-        h if h >= 11 => 1,
-        _ => 0,
+    // The stories get their row only once the grid has enough of its own: on
+    // a short terminal the prices are what the tab is for.
+    let stories = app.macro_headlines();
+    let mut slots = news_columns(row.width).min(stories.len());
+    let mut height = story_row_height(&stories[..slots], row.width);
+    while slots > 0 && height + MIN_GRID_ROWS > inner.height {
+        slots -= 1;
+        height = story_row_height(&stories[..slots], row.width);
     }
-    .min(stories.len());
     app.news_slots.set(slots);
 
-    // A heading rule, then two rows per story.
-    let strip = if slots == 0 { 0 } else { slots as u16 * 2 + 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(strip), Constraint::Min(3)])
+        .constraints([Constraint::Length(height), Constraint::Min(3)])
         .split(inner);
 
     if slots > 0 {
-        draw_macro_strip(
+        draw_story_row(
             f,
             &stories[..slots],
-            app.movers_news_scroll,
-            label,
-            chunks[0],
+            app.movers_on_news.then_some(app.movers_news_scroll),
+            Rect { height, ..row },
         );
     }
     draw_mover_grid(f, app, &movers, chunks[1]);
 }
 
-/// The stories that moved everything, above the cards that show it.
-fn draw_macro_strip(
-    f: &mut Frame,
-    stories: &[&Headline],
-    selected: usize,
-    label: &str,
-    area: Rect,
-) {
-    let width = area.width as usize;
-    let rule = format!("\u{2500} {label} ");
-    let mut lines = vec![Line::from(vec![
-        Span::styled(rule.clone(), HEADING),
-        Span::styled(
-            "\u{2500}".repeat(width.saturating_sub(rule.chars().count())),
-            MUTED,
-        ),
-    ])];
+/// Rows the grid keeps under the story cards: two rows of the smallest card
+/// and room to spare.
+const MIN_GRID_ROWS: u16 = 8;
+/// Narrower than this and a headline wraps into a column of single words.
+const STORY_MIN_WIDTH: u16 = 24;
 
-    for (n, story) in stories.iter().enumerate() {
-        let picked = n == selected;
-        lines.push(pad_to_width(
-            Line::from(vec![
-                Span::raw(if picked { "\u{25b8} " } else { "  " }),
-                Span::styled(truncate(&story.title, width.saturating_sub(2)), BOLD),
-            ])
-            .style(if picked {
-                Style::new().bg(SELECTED_BG)
-            } else {
-                Style::new()
-            }),
-            area.width,
-        ));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  {}",
-                truncate(&story_meta(story), width.saturating_sub(2))
-            ),
-            MUTED,
-        )));
-    }
-    f.render_widget(Paragraph::new(lines), area);
+/// Story cards across a pane, up to one per macro story.
+fn news_columns(width: u16) -> usize {
+    (((width + CARD_GAP) / (STORY_MIN_WIDTH + CARD_GAP)) as usize).clamp(1, MACRO_HEADLINES)
 }
 
-/// A story's section, age and summary, with whatever it does not have left
-/// out rather than shown as an empty field.
+/// Each story card's width when `count` of them share the row. The last one
+/// takes what the even split left over, so the row ends where the grid under
+/// it does.
+fn story_widths(count: usize, width: u16) -> Vec<u16> {
+    let Some(last) = count.checked_sub(1) else {
+        return Vec::new();
+    };
+    let even = width.saturating_sub(CARD_GAP * last as u16) / count as u16;
+    let rest = width.saturating_sub((even + CARD_GAP) * last as u16);
+    (0..count)
+        .map(|n| if n == last { rest } else { even })
+        .collect()
+}
+
+/// The row is as tall as its longest headline, wrapped whole, plus the line
+/// under it and the borders. Nothing is cut short.
+fn story_row_height(stories: &[&Headline], width: u16) -> u16 {
+    stories
+        .iter()
+        .zip(story_widths(stories.len(), width))
+        .map(|(s, w)| wrap(&s.title, w.saturating_sub(4) as usize).len() as u16 + 3)
+        .max()
+        .unwrap_or(0)
+}
+
+/// The stories that moved everything, one card each, above the cards that
+/// show it. `selected` is `None` while the cursor is down on the grid.
+fn draw_story_row(f: &mut Frame, stories: &[&Headline], selected: Option<usize>, area: Rect) {
+    let mut x = area.x;
+    for (n, (story, width)) in stories
+        .iter()
+        .zip(story_widths(stories.len(), area.width))
+        .enumerate()
+    {
+        let picked = selected == Some(n);
+        let rect = Rect { x, width, ..area };
+        x += width + CARD_GAP;
+        let title = format!(
+            "{} {} ",
+            if picked { "\u{25b8}" } else { " " },
+            truncate(topic(story), width.saturating_sub(5) as usize)
+        );
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(if picked { BOLD } else { MUTED })
+            .title(Span::styled(
+                title,
+                if picked { SELECTED_STYLE } else { HEADING },
+            ));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        // A column of air inside each border, so the headline reads as a
+        // paragraph rather than text pressed against a frame.
+        let inner = Rect {
+            x: inner.x + 1,
+            width: inner.width.saturating_sub(2),
+            ..inner
+        };
+
+        let mut lines: Vec<Line> = wrap(&story.title, inner.width as usize)
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, BOLD)))
+            .collect();
+        lines.push(Line::from(Span::styled(
+            truncate(&story_meta(story), inner.width as usize),
+            MUTED,
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+}
+
+/// A story's section and age, with whatever it does not have left out rather
+/// than shown as an empty field.
 fn story_meta(story: &Headline) -> String {
     let mut parts = vec![story.source.name().to_string()];
     let age = age(story);
     if !age.is_empty() {
         parts.push(format!("{age} ago"));
-    }
-    if !story.description.is_empty() {
-        parts.push(story.description.clone());
     }
     parts.join(" \u{00b7} ")
 }
@@ -694,8 +744,7 @@ fn draw_mover_grid(f: &mut Frame, app: &App, movers: &[usize], area: Rect) {
 
     let columns = grid_columns(area.width);
     app.grid_columns.set(columns);
-    let card_width = (area.width.saturating_sub(CARD_GAP * (columns as u16 - 1)) / columns as u16)
-        .min(CARD_MAX_WIDTH);
+    let card_width = grid_card_width(area.width);
     let size = card_size(card_width, area.height);
     let rows = (area.height / size.rows()).max(1) as usize;
     // Page keys should move by a screenful of the grid, not of the board.
@@ -703,10 +752,7 @@ fn draw_mover_grid(f: &mut Frame, app: &App, movers: &[usize], area: Rect) {
 
     let total = movers.len().div_ceil(columns);
     let first = scroll_offset(app.movers_selected / columns, rows, total);
-    // Centred, so the columns a wide terminal cannot fill do not all pile up
-    // on one side of the grid.
-    let used = columns as u16 * card_width + CARD_GAP * (columns as u16 - 1);
-    let left = area.x + area.width.saturating_sub(used) / 2;
+    let left = area.x + grid_span(area.width).0;
 
     for (slot, index) in movers
         .iter()
@@ -720,8 +766,23 @@ fn draw_mover_grid(f: &mut Frame, app: &App, movers: &[usize], area: Rect) {
             width: card_width,
             height: size.rows(),
         };
-        draw_mover_card(f, app, *index, slot == app.movers_selected, size, rect);
+        let selected = !app.movers_on_news && slot == app.movers_selected;
+        draw_mover_card(f, app, *index, selected, size, rect);
     }
+}
+
+fn grid_card_width(width: u16) -> u16 {
+    let columns = grid_columns(width) as u16;
+    (width.saturating_sub(CARD_GAP * (columns - 1)) / columns).min(CARD_MAX_WIDTH)
+}
+
+/// Where the grid's cards start across `width`, and how wide they run. The
+/// grid is centred, so the columns a wide terminal cannot fill do not all
+/// pile up on one side.
+fn grid_span(width: u16) -> (u16, u16) {
+    let columns = grid_columns(width) as u16;
+    let used = columns * grid_card_width(width) + CARD_GAP * (columns - 1);
+    (width.saturating_sub(used) / 2, used)
 }
 
 /// As many ideal-width cards as the pane is nearest to fitting, so widening
@@ -1530,13 +1591,15 @@ fn draw_help_overlay(f: &mut Frame, area: Rect) {
         ("j / k, arrows", "move the selection, or scroll a story"),
         ("Ctrl-D / Ctrl-U", "half page down / up"),
         ("g / G, Home/End", "first / last"),
-        ("h / l", "movers: previous / next card"),
+        ("h / l", "movers: previous / next card or story"),
         ("", "board: jump group   news: cycle section"),
         ("", "dow: order by points, weight, range or move"),
         ("", "detail: switch the chart range"),
         ("Enter", "movers, board: open the detail view"),
+        ("", "movers stories: read the story"),
         ("", "news: read the story, right here"),
-        ("n / N", "movers: pick one of the macro stories"),
+        ("", "movers: k from the top row reaches the stories"),
+        ("n / N", "movers: step through the stories"),
         ("", "board: scroll the news rail"),
         ("f", "rail: matched headlines or the whole pool"),
         ("o", "read the selected story"),
@@ -1715,6 +1778,37 @@ mod tests {
             haystack: String::new(),
         };
         assert_eq!(story_meta(&headline), "Top news");
+    }
+
+    #[test]
+    fn story_cards_share_the_row_up_to_one_per_macro_story() {
+        assert_eq!(news_columns(20), 1);
+        assert_eq!(news_columns(50), 2);
+        assert_eq!(news_columns(80), 3);
+        assert_eq!(news_columns(300), MACRO_HEADLINES);
+    }
+
+    /// A long headline makes the whole row taller rather than being cut off.
+    #[test]
+    fn the_story_row_grows_to_fit_the_longest_headline() {
+        let story = |title: &str| Headline {
+            title: title.into(),
+            link: String::new(),
+            description: String::new(),
+            published: None,
+            source: crate::api::rss::Source::Top,
+            haystack: String::new(),
+        };
+        let short = story("Fed holds");
+        let long = story("Treasury yields climb as traders price in a slower pace of rate cuts");
+        // Two cards of 29 and 30, so 25 and 26 columns of text: the long
+        // title takes three.
+        assert_eq!(story_widths(2, 60), [29, 30]);
+        assert_eq!(story_widths(3, 74), [24, 24, 24]);
+        assert_eq!(story_row_height(&[&short], 60), 4);
+        assert_eq!(story_row_height(&[&short, &long], 60), 6);
+        let text: String = wrap(&long.title, 25).join(" ");
+        assert_eq!(text, long.title, "every word is kept");
     }
 
     #[test]

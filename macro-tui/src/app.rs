@@ -34,37 +34,37 @@ const HISTORY_TTL: Duration = Duration::from_secs(900);
 /// at which a move is worth a card of its own.
 pub const MOVER_THRESHOLD: f64 = 1.0;
 
-/// At most this many macro stories sit above the cards. Two is what a session
-/// has: the data release, and whatever the policy story of the day is.
-pub const MACRO_HEADLINES: usize = 2;
+/// At most this many macro stories sit above the cards, one card each: the
+/// data release, the policy story of the day, and whatever is moving next.
+pub const MACRO_HEADLINES: usize = 3;
 
 /// Terms that mark a story as macro: the releases and policy events that move
 /// the whole board rather than one row of it.
-const MACRO_TERMS: &[&str] = &[
-    "payrolls",
-    "nonfarm",
-    "jobs report",
-    "jobless claims",
-    "unemployment",
-    "job openings",
-    "hiring",
-    "cpi",
-    "inflation",
-    "ppi",
-    "pce",
-    "gdp",
-    "retail sales",
-    "fed",
-    "fomc",
-    "powell",
-    "rate cut",
-    "rate hike",
-    "interest rates",
-    "ecb",
-    "boj",
-    "tariff",
-    "tariffs",
-    "recession",
+const MACRO_TERMS: &[(&str, &str)] = &[
+    ("payrolls", "Jobs"),
+    ("nonfarm", "Jobs"),
+    ("jobs report", "Jobs"),
+    ("jobless claims", "Jobs"),
+    ("unemployment", "Jobs"),
+    ("job openings", "Jobs"),
+    ("hiring", "Jobs"),
+    ("cpi", "Inflation"),
+    ("inflation", "Inflation"),
+    ("ppi", "Inflation"),
+    ("pce", "Inflation"),
+    ("gdp", "Growth"),
+    ("retail sales", "Growth"),
+    ("fed", "Fed"),
+    ("fomc", "Fed"),
+    ("powell", "Fed"),
+    ("rate cut", "Fed"),
+    ("rate hike", "Fed"),
+    ("interest rates", "Fed"),
+    ("ecb", "Central banks"),
+    ("boj", "Central banks"),
+    ("tariff", "Trade"),
+    ("tariffs", "Trade"),
+    ("recession", "Growth"),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +280,9 @@ pub struct App {
     pub movers_selected: usize,
     /// Which of the macro stories above the cards is picked.
     pub movers_news_scroll: usize,
+    /// Whether the Movers cursor is up on the story cards rather than on the
+    /// grid. `k` from the grid's top row goes up there, `j` comes back.
+    pub movers_on_news: bool,
     pub news_scroll: usize,
     pub rail_scroll: usize,
     pub detail_news_scroll: usize,
@@ -335,6 +338,7 @@ impl App {
             dow_sort: DowSort::Points,
             movers_selected: 0,
             movers_news_scroll: 0,
+            movers_on_news: false,
             news_scroll: 0,
             rail_scroll: 0,
             detail_news_scroll: 0,
@@ -486,23 +490,27 @@ impl App {
         self.movers().get(self.movers_selected).copied()
     }
 
-    /// The one or two stories that move the whole board rather than one row
-    /// of it, with a label saying whether they are really macro.
+    /// The stories that move the whole board rather than one row of it.
     ///
     /// Ranked rather than filtered, so a session whose pool holds one
-    /// payrolls story and nothing else macro still fills the second slot
-    /// instead of leaving half the strip blank. The sort is stable, so the
-    /// newest story wins inside a tier.
-    pub fn macro_headlines(&self) -> (Vec<&Headline>, &'static str) {
+    /// payrolls story and nothing else macro still fills the other slots
+    /// instead of leaving the row half blank. A topic already on the row
+    /// sends its next story behind every other topic's first, so a Fed day
+    /// does not fill the row with three Fed cards when there is a jobs story
+    /// too. The sort is stable, so the newest story wins inside a tier.
+    pub fn macro_headlines(&self) -> Vec<&Headline> {
         let mut ranked: Vec<(u8, &Headline)> =
             self.headlines.iter().map(|h| (macro_rank(h), h)).collect();
         ranked.sort_by_key(|(rank, _)| *rank);
-        ranked.truncate(MACRO_HEADLINES);
-        let label = match ranked.first() {
-            Some((rank, _)) if *rank < NOT_MACRO => "Macro",
-            _ => "Top news",
-        };
-        (ranked.into_iter().map(|(_, h)| h).collect(), label)
+        let mut seen = HashSet::new();
+        let (fresh, repeats): (Vec<_>, Vec<_>) =
+            ranked.into_iter().partition(|(_, h)| seen.insert(topic(h)));
+        fresh
+            .into_iter()
+            .chain(repeats)
+            .take(MACRO_HEADLINES)
+            .map(|(_, h)| h)
+            .collect()
     }
 
     // --- fetching --------------------------------------------------------
@@ -838,6 +846,17 @@ impl App {
             KeyCode::Tab => self.active_tab = self.active_tab.next(),
             KeyCode::BackTab => self.active_tab = self.active_tab.prev(),
 
+            // Up off the grid's top row lands on the story cards above it.
+            KeyCode::Char('k') | KeyCode::Up if self.at_top_of_movers() => {
+                self.movers_on_news = true;
+                self.movers_news_scroll = self.movers_selected;
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.movers_on_news_now() => {
+                self.movers_on_news = false;
+            }
+            KeyCode::Char('l') | KeyCode::Right if self.movers_on_news_now() => self.cycle_story(1),
+            KeyCode::Char('h') | KeyCode::Left if self.movers_on_news_now() => self.cycle_story(-1),
+
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
             KeyCode::PageDown => self.move_selection(page),
@@ -868,6 +887,7 @@ impl App {
             }
 
             KeyCode::Enter => match self.active_tab {
+                Tab::Movers if self.movers_on_news => return self.open_selected_story(),
                 Tab::Movers => {
                     if let Some(n) = self.selected_mover() {
                         return self.open_detail(n);
@@ -968,7 +988,7 @@ impl App {
             (self.related_headlines().0, self.detail_news_scroll)
         } else {
             match self.active_tab {
-                Tab::Movers => (self.macro_headlines().0, self.movers_news_scroll),
+                Tab::Movers => (self.macro_headlines(), self.movers_news_scroll),
                 Tab::News => (self.filtered_headlines(), self.news_scroll),
                 Tab::Board => (self.related_headlines().0, self.rail_scroll),
                 // No news pane on the cohort tab, so nothing is under the
@@ -1119,6 +1139,7 @@ impl App {
     /// One card left or right, which on the grid's edges is also the step
     /// from the end of a row to the start of the next.
     fn move_card(&mut self, delta: isize) {
+        self.movers_on_news = false;
         let max = self.movers().len().saturating_sub(1) as isize;
         self.movers_selected = (self.movers_selected as isize)
             .saturating_add(delta)
@@ -1129,6 +1150,9 @@ impl App {
     /// Movers tab's macro strip, or the board's rail.
     fn cycle_story(&mut self, step: isize) {
         if self.active_tab == Tab::Movers && self.detail.is_none() {
+            // Stepping the stories puts the cursor on them, so the card it
+            // picked is the one that looks picked.
+            self.movers_on_news = self.shown_macro_headlines() > 0;
             let max = self.shown_macro_headlines().saturating_sub(1) as isize;
             self.movers_news_scroll =
                 (self.movers_news_scroll as isize + step).clamp(0, max.max(0)) as usize;
@@ -1137,10 +1161,23 @@ impl App {
         }
     }
 
-    /// Macro stories the last frame actually drew. A short terminal gets one
-    /// where a tall one gets two, and the cursor may not point past it.
+    /// Whether a step up from the grid leaves it: the cursor is on the grid's
+    /// top row and there are story cards above to go to.
+    fn at_top_of_movers(&self) -> bool {
+        self.active_tab == Tab::Movers
+            && !self.movers_on_news
+            && self.movers_selected < self.grid_columns.get().max(1)
+            && self.shown_macro_headlines() > 0
+    }
+
+    fn movers_on_news_now(&self) -> bool {
+        self.active_tab == Tab::Movers && self.movers_on_news
+    }
+
+    /// Macro stories the last frame actually drew. A short or narrow terminal
+    /// gets fewer cards, and the cursor may not point past them.
     fn shown_macro_headlines(&self) -> usize {
-        self.news_slots.get().min(self.macro_headlines().0.len())
+        self.news_slots.get().min(self.macro_headlines().len())
     }
 
     /// `g` and `G`: the ends of whichever list is in front.
@@ -1149,6 +1186,7 @@ impl App {
             Tab::Movers => {
                 let max = self.movers().len().saturating_sub(1) as isize;
                 self.movers_selected = to.clamp(0, max.max(0)) as usize;
+                self.movers_on_news = false;
             }
             Tab::Board => self.set_board_selection(to),
             Tab::Dow => self.set_dow_selection(to),
@@ -1200,6 +1238,9 @@ impl App {
         self.movers_news_scroll = self
             .movers_news_scroll
             .min(self.shown_macro_headlines().saturating_sub(1));
+        // A terminal shrunk until the story cards no longer fit takes the
+        // cursor back down to the grid rather than leaving it on nothing.
+        self.movers_on_news &= self.shown_macro_headlines() > 0;
         self.news_scroll = self
             .news_scroll
             .min(self.filtered_headlines().len().saturating_sub(1));
@@ -1285,7 +1326,7 @@ const NOT_MACRO: u8 = 2;
 /// a story about one borrower that mentions the Fed in passing. Both belong
 /// in the news pool; only the first belongs over the day's movers.
 fn macro_rank(headline: &Headline) -> u8 {
-    let is_macro = |text: &str| MACRO_TERMS.iter().any(|t| contains_word(text, t));
+    let is_macro = |text: &str| MACRO_TERMS.iter().any(|(t, _)| contains_word(text, t));
     if is_macro(&headline.title.to_lowercase()) {
         0
     } else if is_macro(&headline.haystack) {
@@ -1293,6 +1334,21 @@ fn macro_rank(headline: &Headline) -> u8 {
     } else {
         NOT_MACRO
     }
+}
+
+/// What a story is about, for the header of its card: the macro topic its
+/// title names, then one its summary names, then the feed section it came
+/// from.
+pub fn topic(headline: &Headline) -> &'static str {
+    let find = |text: &str| {
+        MACRO_TERMS
+            .iter()
+            .find(|(t, _)| contains_word(text, t))
+            .map(|(_, topic)| *topic)
+    };
+    find(&headline.title.to_lowercase())
+        .or_else(|| find(&headline.haystack))
+        .unwrap_or(headline.source.name())
 }
 
 /// Whether a headline's haystack mentions an instrument by name or alias.
@@ -2217,8 +2273,7 @@ mod tests {
     fn the_macro_strip_prefers_a_data_release_over_a_company_story() {
         let mut a = App::new(Tab::Movers.index());
         a.headlines = macro_pool();
-        let (picked, label) = a.macro_headlines();
-        assert_eq!(label, "Macro");
+        let picked = a.macro_headlines();
         assert_eq!(picked.len(), MACRO_HEADLINES);
         assert!(
             picked[0].title.contains("payrolls"),
@@ -2226,6 +2281,11 @@ mod tests {
             picked[0].title
         );
         assert!(picked[1].title.contains("Fed"), "got {:?}", picked[1].title);
+        assert!(
+            picked[2].title.contains("Inflation"),
+            "got {:?}",
+            picked[2].title
+        );
     }
 
     /// A story about one borrower that nods at the Fed in its summary is not
@@ -2252,8 +2312,7 @@ mod tests {
                 Source::Economy,
             ),
         ];
-        let (picked, label) = a.macro_headlines();
-        assert_eq!(label, "Macro");
+        let picked = a.macro_headlines();
         assert!(
             picked[0].title.contains("payrolls"),
             "got {:?}",
@@ -2261,7 +2320,7 @@ mod tests {
         );
         assert!(
             picked[1].title.contains("credit"),
-            "the second slot is filled rather than left blank"
+            "the other slots are filled rather than left blank"
         );
     }
 
@@ -2274,8 +2333,7 @@ mod tests {
             "Fri, 04 Sep 2026 14:00:00 GMT",
             Source::Finance,
         )];
-        let (picked, label) = a.macro_headlines();
-        assert_eq!(label, "Top news");
+        let picked = a.macro_headlines();
         assert_eq!(picked.len(), 1);
     }
 
@@ -2293,6 +2351,75 @@ mod tests {
         a.reader = None;
         a.handle_key(key('N'));
         assert_eq!(a.movers_news_scroll, 0);
+    }
+
+    /// A second Fed story waits behind the first story of every other topic.
+    #[test]
+    fn the_row_spreads_across_topics_before_repeating_one() {
+        let mut a = App::new(Tab::Movers.index());
+        a.headlines = macro_pool();
+        a.headlines.insert(
+            0,
+            headline(
+                "Powell signals patience on rate cuts",
+                "https://e.com/powell",
+                "Fri, 04 Sep 2026 15:00:00 GMT",
+                Source::Top,
+            ),
+        );
+        let topics: Vec<&str> = a.macro_headlines().into_iter().map(topic).collect();
+        assert_eq!(topics, ["Fed", "Jobs", "Inflation"]);
+    }
+
+    #[test]
+    fn a_card_is_headed_by_its_topic_or_else_its_section() {
+        let pool = macro_pool();
+        let topics: Vec<&str> = pool.iter().map(topic).collect();
+        assert_eq!(topics, ["Finance", "Jobs", "Fed", "Inflation"]);
+    }
+
+    /// The stories are reachable with the same keys as the cards: up off the
+    /// grid's top row, across with h and l, and back down.
+    #[test]
+    fn k_from_the_top_row_of_cards_reaches_the_stories() {
+        let mut a = movers_app();
+        a.headlines = macro_pool();
+        a.news_slots.set(3);
+        a.grid_columns.set(2);
+        a.movers_selected = 1;
+        a.handle_key(key('k'));
+        assert!(a.movers_on_news);
+        assert_eq!(a.movers_news_scroll, 1, "lands above the card it left");
+        a.handle_key(key('l'));
+        assert_eq!(a.movers_news_scroll, 2);
+        a.handle_key(key('l'));
+        assert_eq!(a.movers_news_scroll, 2, "stops at the last story");
+        a.handle_key(key('h'));
+        assert_eq!(a.movers_news_scroll, 1);
+        match a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)) {
+            Some(Action::FetchStory(link)) => assert_eq!(link, "https://e.com/fed"),
+            other => panic!("expected a FetchStory action, got {other:?}"),
+        }
+        a.reader = None;
+        a.handle_key(key('j'));
+        assert!(!a.movers_on_news);
+        assert_eq!(a.movers_selected, 1, "back on the card it came from");
+    }
+
+    /// Only the grid's top row leads up, and only when a story is on screen.
+    #[test]
+    fn k_stays_on_the_grid_below_the_top_row_or_with_no_stories() {
+        let mut a = movers_app();
+        a.headlines = macro_pool();
+        a.grid_columns.set(2);
+        a.news_slots.set(0);
+        a.handle_key(key('k'));
+        assert!(!a.movers_on_news);
+        a.news_slots.set(3);
+        a.movers_selected = 2;
+        a.handle_key(key('k'));
+        assert!(!a.movers_on_news);
+        assert_eq!(a.movers_selected, 0);
     }
 
     /// A short terminal draws one story, so the cursor may not point at a
